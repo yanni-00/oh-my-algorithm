@@ -10,7 +10,15 @@
 
 const fs   = require('fs');
 const path = require('path');
-const { OMA, exists, readJSON, nextExpId } = require('../utils/paths');
+const { OMA, exists, readJSON, resolveRequirementsPath, resolveKnowledgePath, resolvePaperDir, resolveTrackDesignDir, resolveTrackMemoryPath } = require('../utils/paths');
+const {
+  getMeta,
+  initLoopForTrack,
+  ensureDefaultTrack,
+  readTrackLoop,
+  getDefaultTrackId,
+} = require('../utils/oma-index');
+const { detectPlatform, skillPathPrefix } = require('../utils/skills-install');
 const { header, section, ok, warn, fail, info, blank, log, kv, color } = require('../utils/print');
 
 const VALID_STAGES = [
@@ -27,59 +35,74 @@ const VALID_STAGES = [
 const LOOP_STAGES = ['design', 'implement', 'train', 'tune'];
 
 // Context files each stage ideally needs — used to display availability
+function trackIdOrDefault(cwd) {
+  return getDefaultTrackId(cwd) || 'default';
+}
+
+function skillsPrefix(cwd) {
+  return skillPathPrefix(detectPlatform(cwd));
+}
+
 const STAGE_CONTEXT = {
   requirement: [],
   design: [
-    { path: (cwd) => path.join(OMA.dir(cwd), 'knowledge.md'),     label: 'knowledge.md',     critical: true  },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'requirements.md'),   label: 'requirements.md',   critical: false },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'paper', 'raw-sections.json'), label: 'paper/raw-sections.json', critical: false },
+    { path: (cwd) => resolveKnowledgePath(cwd),     label: 'requirement/knowledge.md',     critical: true  },
+    { path: (cwd) => resolveRequirementsPath(cwd),   label: 'requirement/requirements.md',   critical: false },
+    { path: (cwd) => path.join(resolvePaperDir(cwd), 'raw-sections.json'), label: 'requirement/paper/raw-sections.json', critical: false },
     { path: (cwd) => path.join(OMA.dir(cwd), 'codebase', 'config.json'),    label: 'codebase/config.json',    critical: false },
-    { path: (cwd) => OMA.memory(cwd),                              label: 'memory.md',         critical: false },
+    { path: (cwd) => resolveTrackMemoryPath(cwd, trackIdOrDefault(cwd)),    label: 'tracks/{id}/memory.md',         critical: false },
   ],
   implement: [
-    { path: (cwd) => path.join(OMA.dir(cwd), 'requirements.md'),  label: 'requirements.md',  critical: false },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'designs'),          label: 'designs/*.md',      critical: true  },
+    { path: (cwd) => resolveRequirementsPath(cwd),  label: 'requirement/requirements.md',  critical: false },
+    { path: (cwd) => resolveTrackDesignDir(cwd, trackIdOrDefault(cwd)),          label: 'tracks/{id}/design/*.md',      critical: true  },
     { path: (cwd) => path.join(OMA.dir(cwd), 'codebase', 'config.json'), label: 'codebase/ (Path A)', critical: false },
   ],
   train: [
-    { path: (cwd) => path.join(OMA.dir(cwd), 'impl', 'github.json'),       label: 'impl/github.json',  critical: true  },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'config.json'),               label: 'config.json',        critical: true  },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'requirements.md'),           label: 'requirements.md',   critical: false },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'designs'),                   label: 'designs/*.md',       critical: false },
-    { path: (cwd) => OMA.memory(cwd),                                       label: 'memory.md',          critical: false },
+    { path: (cwd) => path.join(OMA.impl(cwd), 'github.json'),       label: 'impl/github.json',  critical: true  },
+    { path: (cwd) => OMA.index(cwd),                                       label: 'index.json',         critical: true  },
+    { path: (cwd) => resolveRequirementsPath(cwd),           label: 'requirement/requirements.md',   critical: false },
+    { path: (cwd) => resolveTrackDesignDir(cwd, trackIdOrDefault(cwd)),                   label: 'tracks/{id}/design/*.md',       critical: false },
+    { path: (cwd) => resolveTrackMemoryPath(cwd, trackIdOrDefault(cwd)),                                       label: 'tracks/{id}/memory.md',          critical: false },
   ],
   tune: [
-    { path: (cwd) => OMA.leaderboard(cwd),                                  label: 'leaderboard.json',   critical: false },
-    { path: (cwd) => path.join(OMA.experiments(cwd)),                       label: 'experiments/',        critical: false },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'impl', 'github.json'),       label: 'impl/github.json',   critical: true  },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'config.json'),               label: 'config.json',         critical: true  },
-    { path: (cwd) => OMA.memory(cwd),                                       label: 'memory.md',           critical: false },
+    { path: (cwd) => OMA.trackExperimentsIndex(cwd, trackIdOrDefault(cwd)), label: 'tracks/{id}/experiments-index.json', critical: false },
+    { path: (cwd) => OMA.trackExperiments(cwd, trackIdOrDefault(cwd)),                       label: 'tracks/{id}/experiments/',        critical: false },
+    { path: (cwd) => path.join(OMA.impl(cwd), 'github.json'),       label: 'impl/github.json',   critical: true  },
+    { path: (cwd) => OMA.index(cwd),                                       label: 'index.json',          critical: true  },
+    { path: (cwd) => resolveTrackMemoryPath(cwd, trackIdOrDefault(cwd)),                                       label: 'tracks/{id}/memory.md',           critical: false },
   ],
   deploy: [
     { path: (cwd) => OMA.best(cwd),                                          label: 'best.json',           critical: true  },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'requirements.md'),            label: 'requirements.md',    critical: false },
-    { path: (cwd) => path.join(OMA.dir(cwd), 'designs'),                    label: 'designs/*.md',        critical: false },
+    { path: (cwd) => resolveRequirementsPath(cwd),            label: 'requirement/requirements.md',    critical: false },
+    { path: (cwd) => resolveTrackDesignDir(cwd, trackIdOrDefault(cwd)),                    label: 'tracks/{id}/design/*.md',        critical: false },
     { path: (cwd) => path.join(cwd, 'templates', 'deploy-config.json'),     label: 'deploy-config.json',  critical: false },
   ],
   consolidate: [
     { path: (cwd) => OMA.best(cwd),                                          label: 'best.json',           critical: false },
-    { path: (cwd) => OMA.leaderboard(cwd),                                   label: 'leaderboard.json',    critical: false },
-    { path: (cwd) => OMA.trajectory(cwd),                                    label: 'trajectory.jsonl',    critical: false },
+    { path: (cwd) => resolveTrackMemoryPath(cwd, trackIdOrDefault(cwd)),     label: 'tracks/{id}/memory.md', critical: false },
   ],
 };
 
-// Stage → skill name for display
+// Stage → skill name for display ($loop phases keep familiar $design… aliases)
 const STAGE_SKILL = {
   requirement : '$requirement',
-  design      : '$design',
-  implement   : '$implement',
-  train       : '$train',
-  tune        : '$tune',
+  design      : '$loop (design)',
+  implement   : '$loop (implement)',
+  train       : '$loop (train)',
+  tune        : '$loop (tune)',
   deploy      : '$deploy',
-  consolidate : '$consolidate',
+  consolidate : '$loop (consolidate)',
 };
 
-async function go({ cwd = process.cwd(), stage, reason = '', startStage } = {}) {
+const STAGE_PHASE_DOC = {
+  design      : 'loop/phases/design.md',
+  implement   : 'loop/phases/implement.md',
+  train       : 'loop/phases/train.md',
+  tune        : 'loop/phases/tune.md',
+  consolidate : 'loop/phases/consolidate.md',
+};
+
+async function go({ cwd = process.cwd(), stage, reason = '', startStage, trackId } = {}) {
   const standalonePath = path.join(OMA.dir(cwd), 'standalone.json');
 
   // ── oma go off ─────────────────────────────────────────────────────────────
@@ -130,36 +153,35 @@ async function go({ cwd = process.cwd(), stage, reason = '', startStage } = {}) 
       process.exit(1);
     }
     const start = LOOP_STAGES.includes(startStage) ? startStage : 'design';
+    const track = trackId || null;
 
     // 1. standalone.json — waive the requirement (enter-loop) hard gate.
     fs.writeFileSync(standalonePath, JSON.stringify({
       stage     : 'loop',
       skill     : STAGE_SKILL[start],
       mode      : 'loop',
+      track_id  : track,
       enteredAt : new Date().toISOString(),
       reason    : reason || 'entered iteration loop without $requirement (oma go loop)',
     }, null, 2));
 
-    // 2. loop.json — create lap 1 if absent, else resume the existing loop.
-    const loopPath = path.join(OMA.dir(cwd), 'loop.json');
-    const now = new Date().toISOString();
-    let loop, resumed = false;
-    if (exists(loopPath)) {
-      loop = readJSON(loopPath) || {};
-      loop.stage = start;
-      loop.updated_at = now;
-      resumed = true;
-    } else {
-      loop = { lap: 1, stage: start, exp_id: nextExpId(cwd), hypothesis: reason || null, opened_at: now, updated_at: now };
-    }
-    fs.writeFileSync(loopPath, JSON.stringify(loop, null, 2) + '\n');
+    // 2. Per-track loop.json — create lap 1 or resume existing loop on that track.
+    const { trackId: resolvedTrack, loop, resumed } = initLoopForTrack(cwd, {
+      trackId    : track,
+      startStage : start,
+      reason,
+      resume     : true,
+    });
 
     header('oma go loop — Entering Iteration Loop (Standalone Mode)');
     blank();
     log(`  ${color.yellow('⚠️  STANDALONE MODE')} — the ${color.bold('$requirement')} hard gate is ${color.bold('waived')}.`);
-    log(`  You are in the loop: ${color.cyan('$design ↔ $implement ↔ $train ↔ $tune')} — all advisory.`);
+    log(`  You are in the loop: ${color.cyan('$loop')} ${color.gray('(design ↔ implement ↔ train ↔ tune)')} — all advisory.`);
     log(`  ${color.gray('The deploy gate (best.json deployGateOpen) still applies to exit the loop.')}`);
     blank();
+
+    section('Track');
+    kv('Track', resolvedTrack);
 
     section('Loop');
     kv('Lap',   `#${loop.lap}${resumed ? color.gray('  (resumed)') : ''}`);
@@ -168,17 +190,23 @@ async function go({ cwd = process.cwd(), stage, reason = '', startStage } = {}) 
     if (loop.hypothesis) kv('Hypothesis', loop.hypothesis);
 
     section('Minimal Seed  (asked by the skill on entry — not blocking)');
-    const cfg = readJSON(path.join(OMA.dir(cwd), 'config.json')) || {};
-    const metricDir = cfg.metric_higher_is_better === false ? 'lower-is-better'
-                    : cfg.metric_higher_is_better === true  ? 'higher-is-better' : '—';
-    kv('Primary metric direction', `${metricDir}${color.gray('  (config.json metric_higher_is_better)')}`);
+    const meta = getMeta(cwd);
+    const higher = meta.metric?.higher_is_better;
+    const metricDir = higher === false ? 'lower-is-better'
+                    : higher === true  ? 'higher-is-better' : '—';
+    kv('Primary metric direction', `${metricDir}${color.gray('  (index.json meta.metric.higher_is_better)')}`);
     log(`  ${color.gray('The skill will confirm: primary metric, its direction, and robot/sim target')}`);
     log(`  ${color.gray('(robot, sim_env, control_hz). Provide inline — no full $requirement needed.')}`);
+    log(`  ${color.gray('New design paradigm? Run')} ${color.cyan('oma track open <track-id>')} ${color.gray('before $design.')}`);
 
     blank();
     section('Next Step');
     log(`  Open a session and run: ${color.bold(color.cyan(STAGE_SKILL[start]))}`);
-    log(`  ${color.gray('To leave the loop / return to gated mode:')} ${color.cyan('oma go off')} ${color.gray('(keeps loop.json)')}`);
+    if (STAGE_PHASE_DOC[start]) {
+      const sp = skillsPrefix(cwd);
+      log(`  ${color.gray('Read')} ${sp}loop/SKILL.md ${color.gray('then')} ${sp}${STAGE_PHASE_DOC[start]}`);
+    }
+    log(`  ${color.gray('To leave the loop / return to gated mode:')} ${color.cyan('oma go off')} ${color.gray('(keeps track loop.json)')}`);
     blank();
     return;
   }
@@ -243,6 +271,10 @@ async function go({ cwd = process.cwd(), stage, reason = '', startStage } = {}) 
   blank();
   section('Next Step');
   log(`  Open a Codex session and run: ${color.bold(color.cyan(STAGE_SKILL[stage]))}`);
+  if (STAGE_PHASE_DOC[stage]) {
+    const sp = skillsPrefix(cwd);
+    log(`  ${color.gray('Read')} ${sp}loop/SKILL.md ${color.gray('then')} ${sp}${STAGE_PHASE_DOC[stage]}`);
+  }
   blank();
   log(`  ${color.gray('Codex will see')} ${color.cyan('.oma/standalone.json')} ${color.gray('and enter advisory mode.')}`);
   log(`  ${color.gray('To return to gated mode: ')} ${color.cyan('oma go off')}`);

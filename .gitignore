@@ -1,5 +1,8 @@
 # oh-my-algorithm state
 .oma/experiments/
-.oma/leaderboard.json
 .oma/best.json
-.oma/trajectory.jsonl
+
+# oh-my-algorithm tooling (managed by oma setup -p cursor, not project files)
+.oma/templates/
+.cursor/rules/oma-core.mdc
+.cursor/skills/

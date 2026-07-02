@@ -1,33 +1,37 @@
 {
-  "_comment": "Cursor frontmatter (name + description) injected into .cursor/skills/<stage>/SKILL.md by `oma setup -p cursor`. The description is what Cursor uses to auto-select the skill from user intent, so it encodes the trigger phrasing from the AGENTS.md keyword routing table. Skills already carrying their own YAML frontmatter (e.g. gradmotion) are copied verbatim and need no entry here. Deprecated skills (evaluate) are intentionally omitted so Cursor never auto-loads them.",
+  "_comment": "Reference skills install via `oma reference install` → {platform}/skills/reference-<name>/ (NOT .oma/)",
   "skills": {
     "requirement": {
       "name": "oma-requirement",
-      "description": "OMA stage 1. Use when defining the problem, clarifying requirements, or setting success criteria for a robot RL algorithm — including anchoring on a benchmark/paper and capturing project constraints (control frequency, DOF, hardware target, sim environment). Triggers: requirement, define problem, clarify, success criteria."
+      "description": "OMA requirement phase. Use when defining the problem, clarifying requirements, or setting success criteria for a robot RL project — benchmark/paper, control_hz, DOF, sim target. Triggers: requirement, define problem, clarify, success criteria."
     },
-    "design": {
-      "name": "oma-design",
-      "description": "OMA stage 2. Use when designing the algorithm: policy/network architecture, reward function, observation/action space, domain randomization, or training curriculum for a robot RL task. Triggers: design, architecture, reward design, policy design, network."
-    },
-    "implement": {
-      "name": "oma-implement",
-      "description": "OMA stage 3. Use when implementing/coding the approved design — RL environment, reward function, observation/action wrappers, policy network, training entry point, smoke test, and git push. Triggers: implement, code it, build pipeline, write trainer."
-    },
-    "train": {
-      "name": "oma-train",
-      "description": "OMA stage 4. Use when launching or monitoring a robot RL training run on Gradmotion (gm), collecting metric results, or routing training/code failures back to implement. Triggers: train, run training, launch experiment, start training."
-    },
-    "tune": {
-      "name": "oma-tune",
-      "description": "OMA stage 5. Use for hyperparameter sweeps, ablations, leaderboard ranking, final test-set evaluation, and the deploy-gate decision in a robot RL project. Triggers: tune, sweep, ablation, hyperparameter, evaluate, final eval."
+    "loop": {
+      "name": "oma-loop",
+      "description": "OMA iteration loop (between requirement and deploy). Use for design, implement, train, tune, lap turnaround, tracks, next lap — any in-loop robot RL work. Triggers: loop, design, implement, train, tune, iterate, next lap, track."
     },
     "deploy": {
       "name": "oma-deploy",
-      "description": "OMA stage 6. Use for sim2real deployment: gap analysis, round-based hardware test campaign, staged safety gates, per-issue identification plans, and adapted-parameter feedback for real robot policies. Triggers: deploy, sim2real, hardware test, real robot."
+      "description": "OMA deploy phase (after deploy gate open). Use for sim2real gap analysis, hardware test campaign, deploy artifacts. Triggers: deploy, sim2real, hardware test, real robot."
     },
-    "consolidate": {
-      "name": "oma-consolidate",
-      "description": "OMA memory pass. Use when consolidating findings into .oma/memory.md after experiments — recording dead ends, working patterns, and durable institutional knowledge so they are not re-explored. Triggers: consolidate, update memory, record findings."
+    "loop-design": {
+      "name": "oma-loop-design",
+      "description": "OMA loop phase: design. Policy architecture, reward function, observation/action space, domain randomization, curriculum. Triggers: design, architecture, reward design, policy design, network."
+    },
+    "loop-implement": {
+      "name": "oma-loop-implement",
+      "description": "OMA loop phase: implement. Code the approved design, training pipeline, git push. Triggers: implement, code it, build pipeline, write trainer."
+    },
+    "loop-train": {
+      "name": "oma-loop-train",
+      "description": "OMA loop phase: train. Launch/monitor Gradmotion (gm) training, collect results. Triggers: train, run training, launch experiment, gm, gradmotion."
+    },
+    "loop-tune": {
+      "name": "oma-loop-tune",
+      "description": "OMA loop phase: tune. Hyperparameter sweep, leaderboard, final eval, deploy gate. Triggers: tune, sweep, ablation, hyperparameter, final eval."
+    },
+    "loop-consolidate": {
+      "name": "oma-loop-consolidate",
+      "description": "OMA loop phase: consolidate memory. Update .oma/tracks/{track_id}/memory.md dead ends and working patterns. Triggers: consolidate, update memory, record findings."
     }
   }
 }

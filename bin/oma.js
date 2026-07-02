@@ -6,7 +6,7 @@
  *
  * Usage:
  *   oma setup                        Initialize .oma/ workspace
- *   oma extract --paper <path.pdf>   Extract paper → .oma/paper/ (run before $requirement)
+ *   oma extract --paper <path.pdf>   Extract paper → .oma/requirement/paper/ (run before $requirement)
  *   oma search --topic "..."         Fetch papers from Semantic Scholar (Stream A seeds)
  *   oma doctor                       Check gate chain status
  *   oma status                       Show leaderboard, phase, memory snapshot
@@ -22,6 +22,8 @@ const { index }   = require('../src/commands/index');
 const { go }      = require('../src/commands/go');
 const { doctor }  = require('../src/commands/doctor');
 const { status }  = require('../src/commands/status');
+const { track }   = require('../src/commands/track');
+const { reference } = require('../src/commands/reference');
 const { logCmd }  = require('../src/commands/log');
 const { xp }      = require('../src/commands/experience');
 const { log, err, blank, color } = require('../src/utils/print');
@@ -53,12 +55,12 @@ const HELP = {
   ${color.bold('Commands:')}
     ${color.cyan('setup')}                        Initialize .oma/ workspace in current directory
     ${color.cyan('go <stage> | go loop')}         Enter a stage directly, or the iteration loop (no requirement)
-    ${color.cyan('extract --paper <path.pdf>')}   Extract paper → .oma/paper/ (run before $requirement)
+    ${color.cyan('extract --paper <path.pdf>')}   Extract paper → .oma/requirement/paper/ (run before $requirement)
     ${color.cyan('index --src <repo-path>')}      Index reference codebase → .oma/codebase/ ($design + $implement)
     ${color.cyan('search --topic "..."')}         Fetch papers from Semantic Scholar (Stream A seeds)
     ${color.cyan('doctor')}                       Check gate chain status and workspace health
-    ${color.cyan('status')}                       Show leaderboard, current phase, memory snapshot
-    ${color.cyan('log')}                          Pretty-print the experiment trajectory
+    ${color.cyan('reference')} <list|install|add>     Install optional lab reference skills
+    ${color.cyan('track')} <open|close|list|switch>  Manage design-paradigm tracks (parallel routes)
     ${color.cyan('xp <sub>')}                     Global experience library (add / list / search / show / delete)
     ${color.cyan('version')}                      Print version
     ${color.cyan('help [command]')}               Show help for a command
@@ -86,12 +88,12 @@ const HELP = {
   ${color.bold('oma setup')} — Initialize .oma/ workspace
 
   Creates the .oma/ directory structure, copies templates, and writes
-  an initial config.json. Safe to run multiple times (skips existing files).
+  an initial index.json (project dashboard + meta config). Safe to run multiple times (skips existing files).
 
   ${color.bold('Options:')}
     -p <platform>         Agent platform. Determines how stage prompts install.
-                            codex        → AGENTS.md + .oma/skills/  (default)
-                            meta-agent   → AGENT.md  + .oma/skills/
+                            codex        → AGENTS.md + .codex/skills/  (default)
+                            meta-agent   → AGENT.md  + .codex/skills/
                             cursor       → .cursor/rules + .cursor/skills (+ AGENTS.md fallback)
                             claude-code  → CLAUDE.md + .claude/skills
     --overlay <file.md>   Append a custom markdown file to the end of the generated
@@ -109,10 +111,11 @@ const HELP = {
 
   ${color.bold('Creates (codex / meta-agent):')}
     AGENTS.md / AGENT.md  (agent prompt, determined by -p)
-    .oma/requirements.md  (from template — fill via $requirement)
-    .oma/memory.md        (empty Dead Ends / Working Patterns tables)
-    .oma/config.json      (project name, default seeds, metric direction)
-    .oma/designs/         (directory for $design outputs)
+    .oma/requirement/requirements.md  (from template — fill via $requirement)
+    .oma/tracks/{track_id}/memory.md        (empty Dead Ends / Working Patterns tables)
+    .oma/index.json       (dashboard: meta config, active/closed tracks)
+    .oma/tracks/          (per-paradigm track state)
+    .oma/tracks/{track_id}/design/         (directory for $design outputs)
     .oma/impl/            (directory for $implement outputs)
     .oma/experiments/     (directory for $train / $tune / $evaluate outputs)
     .gitignore            (appends .oma/experiments/ and other volatile state)
@@ -121,7 +124,7 @@ const HELP = {
     .cursor/rules/oma-core.mdc       (alwaysApply constitution from AGENTS.md)
     .cursor/skills/<stage>/SKILL.md  (stage prompts + auto-select frontmatter)
     AGENTS.md                        (@-fallback; Cursor auto-load is unstable)
-    .oma/  (state: requirements.md, memory.md, config.json, designs/, impl/, experiments/)
+    .oma/  (state: requirements.md, memory.md, index.json, tracks/, designs/, impl/, experiments/)
 `,
 
   go: `
@@ -140,15 +143,15 @@ const HELP = {
     deploy        Enter $deploy directly
     consolidate   Enter $consolidate directly
     loop          Enter the iteration loop WITHOUT $requirement (waives the
-                  enter-loop hard gate, inits .oma/loop.json, gates advisory)
-    off           Disable standalone mode (return to gated flow; keeps loop.json)
+                  enter-loop hard gate, inits per-track loop.json, gates advisory)
+    off           Disable standalone mode (return to gated flow; keeps track loop.json)
     status        Show current standalone mode state
 
   ${color.bold('Options:')}
     --stage <s>      Start stage for 'go loop' (design|implement|train|tune; default design)
+    --track <id>     Track for 'go loop' (default: index.default_track or auto-create default)
     --reason "..."   Document why you're entering standalone mode (becomes the
                      first lap's hypothesis for 'go loop')
-    --cwd <path>     Workspace directory (default: cwd)
 
   ${color.bold('Examples:')}
     oma go design                         # jump into $design
@@ -165,30 +168,32 @@ const HELP = {
 `,
 
   xp: `
-  ${color.bold('oma xp')} — Global experience library (~/.oma/experiences.jsonl)
+  ${color.bold('oma xp')} — Project experience library (user-configured path)
 
-  Accumulates successful practices across projects for design, tune, and deploy
-  stages. Codex is informed of the library at stage entry and queries it on demand.
+  Configure once (writes .oma/index.json experiences_dir):
+    ${color.cyan('oma xp init --dir <path>')}
+
+  All subcommands accept ${color.cyan('--dir <path>')} to override for one invocation.
 
   ${color.bold('Subcommands:')}
-    ${color.cyan('add [--stage <stage>]')}          Interactive: fill fields and append one entry
+    ${color.cyan('init --dir <path>')}              Set experiences directory
+    ${color.cyan('add [--dir <path>] [--stage <stage>]')}  Archive an experience
     ${color.cyan('list [--stage <s>] [--tag <t>]')} List experiences (table view)
-    ${color.cyan('search <query> [--stage <s>]')}   Full-text search (used by Codex inside sessions)
+    ${color.cyan('search <query> [--stage <s>]')}   Full-text search
     ${color.cyan('show <id>')}                      Full detail for one entry
     ${color.cyan('delete <id>')}                    Remove one entry
 
   ${color.bold('Valid stages:')} design, tune, deploy
 
-  ${color.bold('Options:')}
-    --format md             Output as Markdown (default for search, used by Codex)
-    --format table          Output as table (default for list)
+  ${color.bold('Storage:')}
+    {experiences_dir}/xp-index.json
+    {experiences_dir}/<id>.md
 
   ${color.bold('Examples:')}
-    oma xp add --stage design
+    oma xp init --dir lab/experiences
+    oma xp add --stage design --name my-pattern --description "..."
     oma xp search "reward hacking" --stage tune
-    oma xp list --stage deploy --format md
-    oma xp show tune-003
-    oma xp delete design-001
+    oma xp index --format md
 `,
 
   doctor: `
@@ -196,10 +201,11 @@ const HELP = {
 
   Checks each gate in the lifecycle chain (requirement → design → implement
   → train → tune → evaluate → deploy) and reports which gates are open
-  or blocked. Shows trajectory statistics and budget info.
+  or blocked. Shows experiment run statistics.
 
   ${color.bold('Options:')}
     --cwd <path>          Check workspace in this directory
+    --migrate             Migrate legacy config.json / root loop.json into index.json + tracks/
 
   ${color.bold('Exit codes:')}
     0   All gates open (or first blocked gate is deploy)
@@ -211,17 +217,19 @@ const HELP = {
 
   Shows:
     Current phase (inferred from which artifacts exist)
+    Project index (active/closed tracks)
+    Per-track iteration loop on default track
     Best result from best.json (deploy gate status)
-    Top 8 leaderboard entries
+    Top 8 tune-ranked experiments (experiments-index.json)
     Memory snapshot (Dead Ends / Working Patterns counts)
-    Last 5 trajectory entries
+    Last 5 experiment results (results.json)
 
   ${color.bold('Options:')}
     --cwd <path>          Read workspace from this directory
 `,
 
   log: `
-  ${color.bold('oma log')} — Experiment trajectory viewer
+  ${color.bold('oma log')} — Experiment results viewer (reads tracks/*/experiments/*/results.json)
 
   ${color.bold('Options:')}
     --tail <n>            Show last N entries (default: 20)
@@ -240,20 +248,20 @@ const HELP = {
   ${color.bold('oma search')} — Fetch papers from Semantic Scholar (Stream A seeds)
 
   Queries Semantic Scholar (free, no API key) and saves structured results
-  to .oma/paper/search-cache/ for the $design skill to consume.
+  to .oma/requirement/paper/search-cache/ for the $design skill to consume.
 
   ${color.bold('Options:')}
     --topic <query>       Search query (repeatable for multiple queries)
-    --from-knowledge      Derive queries automatically from .oma/knowledge.md
+    --from-knowledge      Derive queries automatically from .oma/requirement/knowledge.md
     --limit <n>           Max papers per query (default: 8, max: 20)
     --year-from <year>    Minimum publication year (default: 3 years ago)
     --force               Re-fetch even if cache already exists
     --cwd <path>          Workspace directory (default: cwd)
 
   ${color.bold('Output:')}
-    .oma/paper/search-cache/ss-{slug}.json    Per-query results
-    .oma/paper/search-cache/search-results.json  Combined ranked results
-    .oma/paper/search-cache/stream-a-seeds.md    Ready for $design Stream A
+    .oma/requirement/paper/search-cache/ss-{slug}.json    Per-query results
+    .oma/requirement/paper/search-cache/search-results.json  Combined ranked results
+    .oma/requirement/paper/search-cache/stream-a-seeds.md    Ready for $design Stream A
 
   ${color.bold('Examples:')}
     oma search --topic "attention mechanism tabular data"
@@ -263,34 +271,31 @@ const HELP = {
 `,
 
   index: `
-  ${color.bold('oma index')} — Index a reference open-source implementation
+  ${color.bold('oma index')} — Map local code paths to tracks
 
-  Scans the repository at --src, scores files by importance, extracts
-  class/function symbols, and writes a structured codebase index to
-  .oma/codebase/ for the $design and $implement skills to consume.
+  Registers which local directory each design-paradigm track edits during
+  $design / $implement (Path A). Parallel tracks can point at different folders.
 
   ${color.bold('Why this matters:')}
-    $design Phase 0 loads the codebase to make ideas concretely implementable.
-    $implement uses Path A (Adapt) when .oma/codebase/ exists — modifying
-    only the files that need to change instead of reimplementing from scratch.
+    Two routes often need two code trees. .oma/codebase/config.json holds a
+    per-track srcPath map; the active track (index.default_track) selects which
+    path Agent reads and modifies.
 
   ${color.bold('Options:')}
-    --src <path>          Path to the open-source repository (required)
-    --top <n>             Number of key files to index in depth (default: 40)
-    --force               Re-index even if .oma/codebase/ already exists
+    --src <path>          Local code directory (required to register)
+    --track <track-id>    Target track (default: index.default_track)
+    --list                Show track → srcPath map (also when --src omitted)
+    --force               Overwrite existing mapping for that track
     --cwd <path>          Workspace directory (default: cwd)
 
   ${color.bold('Output:')}
-    .oma/codebase/config.json     Source path, language distribution, index stats
-    .oma/codebase/index.json      Scored file list with extracted symbols
-    .oma/codebase/symbols.json    Flat symbol map (class/function → file)
-    .oma/codebase/key-files.md    Agent-readable file role map ($design loads this)
-    .oma/codebase/arch-map.md     Module/class map ($implement uses for surgery)
+    .oma/codebase/config.json     { schema_version, tracks: { <id>: { srcPath, ... } } }
 
   ${color.bold('Examples:')}
-    oma index --src ./xgboost
-    oma index --src ~/code/tabnet --top 60
-    oma index --src ./lightgbm --force
+    oma index --list
+    oma index --src ./legged_gym_gait --track gait-clock
+    oma index --src ./legged_gym_minimal --track minimal-reward
+    oma index --src ./legged_gym --force
 `,
 
   extract: `
@@ -302,14 +307,14 @@ const HELP = {
 
   ${color.bold('Options:')}
     --paper <path>        Path to the PDF file (required)
-    --force               Re-extract even if .oma/paper/ already exists
+    --force               Re-extract even if .oma/requirement/paper/ already exists
     --cwd <path>          Workspace directory (default: cwd)
 
   ${color.bold('Output:')}
-    .oma/paper/raw-text.txt        Full extracted text
-    .oma/paper/raw-sections.json   Heuristically split sections
-    .oma/paper/meta.json           Title, year, venue, best result (best-effort)
-    .oma/paper/manifest.json       Extraction summary
+    .oma/requirement/paper/raw-text.txt        Full extracted text
+    .oma/requirement/paper/raw-sections.json   Heuristically split sections
+    .oma/requirement/paper/meta.json           Title, year, venue, best result (best-effort)
+    .oma/requirement/paper/manifest.json       Extraction summary
 
   ${color.bold('Extraction backends (tried in order):')}
     1. pdftotext (poppler-utils)   brew install poppler / apt install poppler-utils
@@ -319,6 +324,55 @@ const HELP = {
   ${color.bold('Examples:')}
     oma extract --paper ./attention.pdf
     oma extract --paper ~/papers/bert.pdf --force
+`,
+
+  track: `
+  ${color.bold('oma track')} — Manage design-paradigm tracks (parallel routes)
+
+  Tracks are paradigm-level routes (e.g. redirect-data, gait-clock, minimal-reward),
+  not reward-tuning laps. Mechanical CRUD only — semantic decisions stay with the Agent.
+
+  ${color.bold('Subcommands:')}
+    ${color.cyan('open <track-id>')}     Open a new active track
+    ${color.cyan('close <track-id>')}    Move track to closed_tracks
+    ${color.cyan('list')}                Show active/closed tracks and default loop
+    ${color.cyan('switch <track-id>')}   Set index.default_track
+
+  ${color.bold('Options (open):')}
+    --label "..."       Human label (design paradigm name)
+    --paradigm "..."    Paradigm description
+    --owner name        Owner
+    --target path       Target ref (default: requirements.md)
+
+  ${color.bold('Options (close):')}
+    --deliverable "..."  What was delivered
+
+  ${color.bold('Examples:')}
+    oma track open gait-clock --label "步态时钟驱动"
+    oma track list
+    oma track switch gait-clock
+    oma track close minimal-reward --deliverable "exp_A08 deploy"
+`,
+
+  reference: `
+  ${color.bold('oma reference')} — Install optional lab reference skills
+
+  Reference skills are lab-specific helpers (e.g. experiment-analysis, experiment-recording).
+  They are NOT part of OMA core routing — install only when needed.
+
+  ${color.bold('Subcommands:')}
+    ${color.cyan('list')}                          Show package catalog + installed skills
+    ${color.cyan('install <name>')}                Copy from skills/reference/ → .codex/skills/reference-
+    ${color.cyan('add --name <id> --src <path>')}  Register a custom reference skill
+
+  ${color.bold('Options:')}
+    -p cursor           Also install to .cursor/skills/reference-<name>/
+
+  ${color.bold('Examples:')}
+    oma reference list
+    oma reference install experiment-analysis
+    oma reference install experiment-recording -p cursor
+    oma reference add --name my-analysis --src ./lab/skills/foo
 `,
 };
 
@@ -346,6 +400,7 @@ async function main() {
         stage     : args[1] || 'status',
         reason    : flagValue('--reason') || '',
         startStage: flagValue('--stage') || (args[1] === 'loop' ? args[2] : undefined),
+        trackId   : flagValue('--track') || null,
       });
       break;
 
@@ -372,8 +427,9 @@ async function main() {
       await index({
         cwd,
         srcPath : flagValue('--src'),
-        topN    : parseInt(flagValue('--top') || '40', 10),
+        trackId : flagValue('--track'),
         force   : hasFlag('--force'),
+        list    : hasFlag('--list') || !flagValue('--src'),
       });
       break;
 
@@ -384,7 +440,20 @@ async function main() {
 
     case 'doctor':
       if (hasFlag('-h', '--help')) { log(HELP.doctor); return; }
-      await doctor({ cwd });
+      await doctor({ cwd, migrate: hasFlag('--migrate') });
+      break;
+
+    case 'track':
+      if (hasFlag('-h', '--help')) { log(HELP.track); return; }
+      await track(args.slice(1), { cwd });
+      break;
+
+    case 'reference':
+      if (hasFlag('-h', '--help')) { log(HELP.reference); return; }
+      await reference(args.slice(1), {
+        cwd,
+        platform: flagValue('-p') || null,
+      });
       break;
 
     case 'status':
@@ -417,7 +486,7 @@ async function main() {
           xpArgs.push(args[i]);
         }
       }
-      await xp(xpArgs, xpFlags);
+      await xp(xpArgs, { ...xpFlags, cwd });
       break;
     }
 

@@ -1,71 +1,38 @@
 {
-  "_comment": "Canonical experiment results schema. Written by $train, $tune (per worker), $evaluate.",
-  "_schema_version": "1.0",
+  "_comment": "Canonical experiment results. Written at GM task start (running) and updated on completion.",
+  "_schema_version": "2.0",
 
   "exp_id": "exp-YYYYMMDD-001",
+  "track_id": "your-track-id",
   "phase": "train",
-  "status": "completed",
-  "completed_at": "[ISO 8601 timestamp]",
+  "status": "running",
+  "started_at": "[ISO 8601 — written when GM task starts]",
+  "completed_at": null,
+  "gm_task_id": "[Gradmotion task id — set when task is created]",
 
-  "seeds_completed": 3,
+  "design_ref": "design/design-YYYYMMDD-001.md",
+  "config_summary": "[optional short hyperparam fingerprint for tune dedup]",
+
+  "seeds_completed": 0,
   "seeds_failed": 0,
 
-  "per_seed": [
-    {
-      "seed": 42,
-      "status": "converged",
-      "best_val_metric": 0.831,
-      "best_val_metric_name": "f1_macro",
-      "best_epoch": 43,
-      "final_train_loss": 0.221,
-      "epochs_run": 50,
-      "wall_time_minutes": 42,
-      "checkpoint_path": "experiments/exp-YYYYMMDD-001/checkpoints/seed42_best.pt"
-    },
-    {
-      "seed": 123,
-      "status": "converged",
-      "best_val_metric": 0.827,
-      "best_val_metric_name": "f1_macro",
-      "best_epoch": 38,
-      "final_train_loss": 0.234,
-      "epochs_run": 50,
-      "wall_time_minutes": 41,
-      "checkpoint_path": "experiments/exp-YYYYMMDD-001/checkpoints/seed123_best.pt"
-    },
-    {
-      "seed": 456,
-      "status": "converged",
-      "best_val_metric": 0.835,
-      "best_val_metric_name": "f1_macro",
-      "best_epoch": 47,
-      "final_train_loss": 0.218,
-      "epochs_run": 50,
-      "wall_time_minutes": 43,
-      "checkpoint_path": "experiments/exp-YYYYMMDD-001/checkpoints/seed456_best.pt"
-    }
-  ],
+  "per_seed": [],
 
   "summary": {
     "metric_name": "f1_macro",
     "higher_is_better": true,
-    "mean": 0.831,
-    "std": 0.004,
-    "min": 0.827,
-    "max": 0.835,
-    "median": 0.831,
-    "all_converged": true,
-    "total_wall_time_minutes": 126
+    "mean": null,
+    "std": null,
+    "min": null,
+    "max": null,
+    "median": null,
+    "all_converged": null,
+    "total_wall_time_minutes": null
   },
 
-  "secondary_metrics": {
-    "_comment": "Only populated for $evaluate phase",
-    "precision": {"mean": null, "std": null},
-    "recall": {"mean": null, "std": null}
-  },
+  "secondary_metrics": {},
 
   "failure_log": {
-    "_comment": "Populated if any seed failed",
     "failed_seeds": [],
     "failure_reasons": []
   }

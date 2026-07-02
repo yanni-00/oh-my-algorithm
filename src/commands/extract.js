@@ -6,9 +6,9 @@
  * Mechanical PDF → structured sections pipeline.
  * Runs BEFORE a Codex session. Produces:
  *
- *   .oma/paper/raw-text.txt          full PDF text
- *   .oma/paper/raw-sections.json     heuristically split sections
- *   .oma/paper/meta.json             title, authors, year (best-effort)
+ *   .oma/requirement/paper/raw-text.txt
+ *   .oma/requirement/paper/raw-sections.json
+ *   .oma/requirement/paper/meta.json
  *
  * The Codex agent reads raw-sections.json during $requirement Phase 2
  * and synthesises knowledge.md from it.
@@ -61,7 +61,7 @@ async function extract({ cwd = process.cwd(), paperPath = null, force = false } 
     process.exit(1);
   }
 
-  const paperDir = path.join(omaDir, 'paper');
+  const paperDir = OMA.paper(cwd);
   const outText  = path.join(paperDir, 'raw-text.txt');
   const outSecs  = path.join(paperDir, 'raw-sections.json');
   const outMeta  = path.join(paperDir, 'meta.json');
@@ -91,7 +91,7 @@ async function extract({ cwd = process.cwd(), paperPath = null, force = false } 
   }
 
   fs.writeFileSync(outText, rawText, 'utf8');
-  ok('Raw text', `${Math.round(rawText.length / 1000)}k chars → .oma/paper/raw-text.txt`);
+  ok('Raw text', `${Math.round(rawText.length / 1000)}k chars → requirement/paper/raw-text.txt`);
 
   // ── 4. Parse sections ──────────────────────────────────────────────────────
   section('Splitting into sections');
@@ -109,7 +109,7 @@ async function extract({ cwd = process.cwd(), paperPath = null, force = false } 
   }
 
   fs.writeFileSync(outSecs, JSON.stringify(sections, null, 2), 'utf8');
-  ok('raw-sections.json', `.oma/paper/raw-sections.json`);
+  ok('raw-sections.json', 'requirement/paper/raw-sections.json');
 
   // ── 5. Extract metadata ────────────────────────────────────────────────────
   section('Extracting metadata');
@@ -136,7 +136,7 @@ async function extract({ cwd = process.cwd(), paperPath = null, force = false } 
 
   // ── 7. Done ────────────────────────────────────────────────────────────────
   blank();
-  ok('Extraction complete', `.oma/paper/ ready for $requirement`);
+  ok('Extraction complete', 'requirement/paper/ ready for $requirement');
   blank();
   printNextSteps(missing);
 }
@@ -302,7 +302,7 @@ function printNextSteps(missingSections = []) {
   log(color.bold('  Next steps:'));
   blank();
   info('Start a Codex session and run:', '"$requirement"');
-  info('The agent will read .oma/paper/ and synthesise knowledge.md');
+  info('The agent will read requirement/paper/ and synthesise requirement/knowledge.md');
   if (missingSections.length) {
     warn('Missing sections', missingSections.join(', '));
     info('  → The agent will ask you to provide these manually during the interview');

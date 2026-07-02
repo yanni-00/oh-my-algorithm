@@ -2,7 +2,15 @@
 
 const fs   = require('fs');
 const path = require('path');
-const { OMA, exists, readJSON, readText } = require('../utils/paths');
+const { OMA, exists, readJSON, readText, resolveRequirementsPath, resolveTrackDesignDir, resolveTrackMemoryPath, listAllExperimentDirs } = require('../utils/paths');
+const {
+  readIndex,
+  getMeta,
+  readTrackLoop,
+  getDefaultTrackId,
+  hasLegacyFiles,
+} = require('../utils/oma-index');
+const { getTuneRanking, listAllResults, hasTuneSweep } = require('../utils/experiments');
 const { header, section, ok, warn, info, blank, log, kv, table, color } = require('../utils/print');
 
 async function status({ cwd = process.cwd() } = {}) {
@@ -19,16 +27,52 @@ async function status({ cwd = process.cwd() } = {}) {
   const phase = inferPhase(cwd);
   log(`  ${color.bold(color.cyan(phase.current))}  ${color.gray('→')}  ${color.gray(phase.next)}`);
 
-  // ── 1b. Iteration Loop ────────────────────────────────────────────────────
-  const loopPath = path.join(OMA.dir(cwd), 'loop.json');
-  if (exists(loopPath)) {
-    const loop = readJSON(loopPath) || {};
-    section('Iteration Loop');
-    kv('Lap',        loop.lap != null ? `#${loop.lap}` : '—');
-    kv('Stage',      color.cyan(loop.stage || '—') + color.gray('  (design ↔ implement ↔ train ↔ tune — advisory)'));
-    kv('Exp',        loop.exp_id || '—');
-    if (loop.hypothesis) kv('Hypothesis', loop.hypothesis);
-    if (loop.updated_at) kv('Updated',    loop.updated_at.slice(0, 16).replace('T', ' '));
+  // ── 1b. Project index (tracks dashboard) ─────────────────────────────────
+  const index = readIndex(cwd);
+  if (index) {
+    section('Project Index');
+    const meta = index.meta || {};
+    if (meta.project_name) kv('Project', meta.project_name);
+    kv('Active tracks', String((index.active_tracks || []).length));
+    kv('Closed tracks', String((index.closed_tracks || []).length));
+    kv('Default track', index.default_track || '—');
+
+    const active = index.active_tracks || [];
+    if (active.length) {
+      blank();
+      const rows = [['track_id', 'label', 'status', 'next']];
+      for (const t of active) {
+        const mark = t.track_id === index.default_track ? color.green('*') : ' ';
+        rows.push([
+          mark + t.track_id,
+          (t.label || '').slice(0, 20),
+          (t.status_summary || '—').slice(0, 24),
+          (t.next_milestone || '—').slice(0, 20),
+        ]);
+      }
+      table(rows);
+    }
+  }
+
+  // ── 1c. Iteration Loop (per default track) ─────────────────────────────
+  const defaultTrack = getDefaultTrackId(cwd);
+  if (defaultTrack) {
+    const { trackId, loop } = readTrackLoop(cwd, defaultTrack);
+    if (loop) {
+      section(`Iteration Loop @ ${trackId}`);
+      kv('Lap',        loop.lap != null ? `#${loop.lap}` : '—');
+      kv('Stage',      color.cyan(loop.stage || '—') + color.gray('  (design ↔ implement ↔ train ↔ tune — advisory)'));
+      kv('Exp',        loop.exp_id || '—');
+      if (loop.hypothesis) kv('Hypothesis', loop.hypothesis);
+      if (loop.updated_at) kv('Updated',    loop.updated_at.slice(0, 16).replace('T', ' '));
+    }
+  } else if (exists(path.join(OMA.dir(cwd), 'loop.json'))) {
+    const loop = readJSON(path.join(OMA.dir(cwd), 'loop.json')) || {};
+    section('Iteration Loop (legacy root loop.json)');
+    warn('Migrate', 'Run `oma doctor --migrate` to move to tracks/ layout');
+    kv('Lap', loop.lap != null ? `#${loop.lap}` : '—');
+    kv('Stage', color.cyan(loop.stage || '—'));
+    kv('Exp', loop.exp_id || '—');
   }
 
   // ── 2. Best Result ────────────────────────────────────────────────────────
@@ -50,88 +94,84 @@ async function status({ cwd = process.cwd() } = {}) {
     info('No evaluation run yet', 'run $tune (Phase 5 final eval) to populate best.json');
   }
 
-  // ── 3. Leaderboard (top 8) ────────────────────────────────────────────────
-  section('Leaderboard');
-  const lbPath = OMA.leaderboard(cwd);
-  if (exists(lbPath)) {
-    const lb = readJSON(lbPath);
-    if (lb && lb.entries && lb.entries.length) {
-      const higherBetter = lb.higher_is_better !== false;
-      const metric = lb.metric_name || '?';
-      const entries = lb.entries.slice(0, 8);
+  // ── 3. Tune ranking (per track) ───────────────────────────────────────────
+  section('Tune Ranking');
+  const trackForRank = defaultTrack || 'default';
+  const ranking = getTuneRanking(cwd, trackForRank);
+  if (ranking.entries.length) {
+    const metric = ranking.metric_name || '?';
+    const entries = ranking.entries.slice(0, 8);
 
-      const rows = [
-        ['#', 'exp-id', `${metric} (mean)`, '± std', 'phase', 'config'],
-      ];
-      entries.forEach((e, i) => {
-        const rank   = String(i + 1);
-        const mean   = typeof e.metric_mean === 'number' ? e.metric_mean.toFixed(4) : '?';
-        const std    = typeof e.metric_std  === 'number' ? e.metric_std.toFixed(4)  : '?';
-        const isBest = i === 0;
-        rows.push([
-          isBest ? color.green(rank) : color.gray(rank),
-          isBest ? color.green(e.exp_id) : e.exp_id,
-          isBest ? color.green(mean) : mean,
-          std,
-          color.gray(e.phase || '?'),
-          color.gray((e.config_summary || '').slice(0, 30)),
-        ]);
-      });
-      table(rows);
-      if (lb.entries.length > 8) {
-        info(`  …and ${lb.entries.length - 8} more entries`);
-      }
-    } else {
-      info('Leaderboard empty');
+    const rows = [
+      ['#', 'exp-id', `${metric} (mean)`, '± std', 'phase', 'config'],
+    ];
+    entries.forEach((e, i) => {
+      const rank   = String(i + 1);
+      const mean   = typeof e.metric_mean === 'number' ? e.metric_mean.toFixed(4) : '?';
+      const std    = typeof e.metric_std  === 'number' ? e.metric_std.toFixed(4)  : '?';
+      const isBest = i === 0;
+      rows.push([
+        isBest ? color.green(rank) : color.gray(rank),
+        isBest ? color.green(e.exp_id) : e.exp_id,
+        isBest ? color.green(mean) : mean,
+        std,
+        color.gray(e.phase || '?'),
+        color.gray((e.config_summary || '').slice(0, 30)),
+      ]);
+    });
+    table(rows);
+    kv('Track', trackForRank);
+    if (ranking.entries.length > 8) {
+      info(`  …and ${ranking.entries.length - 8} more entries`);
     }
   } else {
-    info('No leaderboard yet', 'appears after first $train');
+    info('No ranked experiments yet', `tracks/${trackForRank}/experiments-index.json`);
   }
 
   // ── 4. Memory snapshot ────────────────────────────────────────────────────
   section('Memory Snapshot');
-  const memPath = OMA.memory(cwd);
+  const trackForMem = defaultTrack || 'default';
+  const memPath = resolveTrackMemoryPath(cwd, trackForMem);
   if (exists(memPath)) {
     const text = readText(memPath);
     const deadEnds      = countTableRows(text, 'Dead Ends');
     const workingPat    = countTableRows(text, 'Working Patterns');
     const openHyp       = countTableRows(text, 'Open Hypotheses');
+    kv('Track', trackForMem);
     kv('Dead Ends',        String(deadEnds));
     kv('Working Patterns', String(workingPat));
     kv('Open Hypotheses',  String(openHyp));
 
-    // Extract budget from memory.md table if present
     const budgetMatch = text.match(/Remaining\s*\|\s*([^\n|]+)/);
     if (budgetMatch) kv('Budget Remaining', budgetMatch[1].trim());
   } else {
-    info('memory.md not yet created', 'appears after first $consolidate');
+    info(`tracks/${trackForMem}/memory.md not yet created`, 'created by oma track open or $loop (consolidate)');
   }
 
-  // ── 5. Recent trajectory ──────────────────────────────────────────────────
+  // ── 5. Recent experiments ─────────────────────────────────────────────────
   section('Recent Experiments');
-  const trajPath = OMA.trajectory(cwd);
-  if (exists(trajPath)) {
-    const lines = fs.readFileSync(trajPath, 'utf8').split('\n').filter(Boolean);
-    const recent = lines.slice(-5).reverse();
+  const recent = listAllResults(cwd, { trackId: defaultTrack || undefined }).slice(0, 5);
 
-    if (recent.length) {
-      const rows = [['exp-id', 'phase', 'metric (mean)', 'status', 'timestamp']];
-      for (const line of recent) {
-        try {
-          const e = JSON.parse(line);
-          rows.push([
-            e.exp_id   || '?',
-            color.gray(e.phase || '?'),
-            e.metric_mean != null ? String(e.metric_mean.toFixed(4)) : '?',
-            statusIcon(e.status),
-            color.gray((e.timestamp || '').slice(0, 16).replace('T', ' ')),
-          ]);
-        } catch { /* skip */ }
-      }
-      table(rows);
+  if (recent.length) {
+    const rows = [['exp-id', 'phase', 'metric (mean)', 'status', 'started']];
+    for (const row of recent) {
+      const e = row.results;
+      const summary = e.summary || {};
+      rows.push([
+        row.expId,
+        color.gray(e.phase || '?'),
+        summary.mean != null ? String(summary.mean.toFixed(4)) : '?',
+        statusIcon(e.status),
+        color.gray((e.started_at || e.startedAt || '').slice(0, 16).replace('T', ' ')),
+      ]);
     }
+    table(rows);
   } else {
     info('No experiments yet');
+  }
+
+  if (hasLegacyFiles(cwd)) {
+    warn('Legacy state', 'config.json or root loop.json detected — run `oma doctor --migrate`');
   }
 
   blank();
@@ -140,29 +180,30 @@ async function status({ cwd = process.cwd() } = {}) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function inferPhase(cwd) {
-  if (!exists(OMA.requirements(cwd)))
+  if (!exists(resolveRequirementsPath(cwd)))
     return { current: 'pre-requirement', next: 'run $requirement to begin' };
 
-  const designs = exists(OMA.designs(cwd))
-    ? fs.readdirSync(OMA.designs(cwd)).filter((f) => f.endsWith('.md'))
+  const trackId = getDefaultTrackId(cwd) || 'default';
+  const designDir = resolveTrackDesignDir(cwd, trackId);
+  const designs = exists(designDir)
+    ? fs.readdirSync(designDir).filter((f) => f.endsWith('.md'))
     : [];
   if (!designs.length)
-    return { current: 'requirement ✓', next: 'run $design' };
+    return { current: 'requirement ✓', next: 'run $loop (design)' };
 
   if (!exists(OMA.implChecklist(cwd)))
-    return { current: 'design ✓', next: 'run $implement' };
+    return { current: 'design ✓', next: 'run $loop (implement)' };
 
   const text      = readText(OMA.implChecklist(cwd)) || '';
   const unchecked = (text.match(/- \[ \]/g) || []).length;
   if (unchecked > 0)
     return { current: 'implement (in progress)', next: `${unchecked} checklist item(s) remaining` };
 
-  if (!exists(OMA.leaderboard(cwd)))
+  const trainRuns = listAllResults(cwd, { phase: 'train', status: 'completed' });
+  if (!trainRuns.length)
     return { current: 'implement ✓', next: 'run $train' };
 
-  const lb = readJSON(OMA.leaderboard(cwd));
-  const hasTune = lb?.entries?.some((e) => e.phase === 'tune');
-  if (!hasTune)
+  if (!hasTuneSweep(cwd, trackId))
     return { current: 'train ✓', next: 'run $tune to improve' };
 
   if (!exists(OMA.best(cwd)))
@@ -193,7 +234,9 @@ function countTableRows(text, sectionTitle) {
 function statusIcon(status) {
   if (!status) return color.gray('?');
   if (status === 'completed') return color.green('✓ completed');
+  if (status === 'running')   return color.yellow('… running');
   if (status === 'failed')    return color.red('✗ failed');
+  if (status === 'lost')      return color.red('? lost');
   return color.yellow(status);
 }
 

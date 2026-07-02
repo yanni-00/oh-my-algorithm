@@ -1,0 +1,12 @@
+{
+  "_comment": "Per-track local code paths. Register via: oma index --src <path> --track <track-id>",
+  "schema_version": "2.0",
+  "tracks": {
+    "example-track": {
+      "srcPath": "/absolute/or/relative/path/to/your/code",
+      "primaryLang": "Python",
+      "topLevel": ["legged_gym/", "resources/"],
+      "registeredAt": null
+    }
+  }
+}

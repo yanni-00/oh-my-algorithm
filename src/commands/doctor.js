@@ -2,16 +2,28 @@
 
 const fs   = require('fs');
 const path = require('path');
-const { OMA, exists, readJSON, readText } = require('../utils/paths');
+const { OMA, exists, readJSON, readText, listAllExperimentDirs, resolveRequirementsPath, resolveKnowledgePath, resolvePaperDir, resolveTrackDesignDir, resolveTrackMemoryPath } = require('../utils/paths');
+const {
+  getDefaultTrackId,
+  readTrackLoop,
+  hasLegacyFiles,
+  needsLayoutMigration,
+  migrateAll,
+} = require('../utils/oma-index');
+const {
+  getTuneRanking,
+  hasCompletedTrainOrTune,
+  findRunningExperiments,
+  listAllResults,
+} = require('../utils/experiments');
 const { header, section, ok, warn, fail, info, blank, log, kv, color } = require('../utils/print');
 
-// Each gate: { label, check(cwd) → { pass, detail } }
 const GATES = [
   {
     skill: '$requirement',
-    artifact: '.oma/requirements.md',
+    artifact: '.oma/requirement/requirements.md',
     check: (cwd) => {
-      const p = OMA.requirements(cwd);
+      const p = resolveRequirementsPath(cwd);
       if (!exists(p)) return { pass: false, detail: 'File missing — run $requirement to create it' };
       const text = readText(p);
       if (text && text.includes('{PROJECT_NAME}')) {
@@ -22,13 +34,14 @@ const GATES = [
   },
   {
     skill: '$design',
-    artifact: '.oma/designs/',
+    artifact: 'tracks/{id}/design/',
     check: (cwd) => {
-      const dir = OMA.designs(cwd);
-      if (!exists(dir)) return { pass: false, detail: 'designs/ directory missing' };
+      const trackId = getDefaultTrackId(cwd) || 'default';
+      const dir = resolveTrackDesignDir(cwd, trackId);
+      if (!exists(dir)) return { pass: false, detail: 'design/ directory missing — run $loop (design)' };
       const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
-      if (!files.length) return { pass: false, detail: 'No design document found — run $design' };
-      return { pass: true, detail: `${files.length} design doc(s): ${files.join(', ')}` };
+      if (!files.length) return { pass: false, detail: 'No design document found — run $loop (design)' };
+      return { pass: true, detail: `${files.length} design doc(s) in tracks/${trackId}/design/` };
     },
   },
   {
@@ -59,36 +72,33 @@ const GATES = [
   },
   {
     skill: '$train',
-    artifact: '.oma/experiments/ (≥1 train run)',
+    artifact: 'tracks/{id}/experiments/ (≥1 train run)',
     check: (cwd) => {
-      const expDir = OMA.experiments(cwd);
-      if (!exists(expDir)) return { pass: false, detail: 'experiments/ directory missing' };
-      const trainRuns = findExperimentsByPhase(expDir, 'train');
+      const trainRuns = findExperimentsByPhase(cwd, 'train');
       if (!trainRuns.length) return { pass: false, detail: 'No train experiments found — run $train' };
       return { pass: true, detail: `${trainRuns.length} train run(s) found` };
     },
   },
   {
     skill: '$tune',
-    artifact: '.oma/leaderboard.json + best.json',
+    artifact: 'tracks/{track}/experiments-index.json + best.json',
     check: (cwd) => {
-      const lbPath   = OMA.leaderboard(cwd);
+      const trackId = getDefaultTrackId(cwd) || 'default';
       const bestPath = OMA.best(cwd);
 
-      // Phase A: has any sweep run happened?
-      if (!exists(lbPath)) {
-        return { pass: false, detail: 'leaderboard.json missing — run $tune to start sweep' };
-      }
-      const lb = readJSON(lbPath);
-      if (!lb || !lb.entries || !lb.entries.length) {
-        return { pass: false, detail: 'Leaderboard empty — $tune sweep not yet started' };
+      if (!hasCompletedTrainOrTune(cwd, trackId)) {
+        return {
+          pass: false,
+          detail: `tracks/${trackId}/experiments-index.json empty — run $train or $tune`,
+        };
       }
 
-      // Phase B: has final evaluation (test set) completed?
+      const ranking = getTuneRanking(cwd, trackId);
+
       if (!exists(bestPath)) {
         return {
           pass: false,
-          detail: `Sweep in progress (${lb.entries.length} configs) — final evaluation not yet run (Phase 5 of $tune)`,
+          detail: `Sweep in progress (${ranking.entries.length} completed) — final evaluation not yet run ($tune Phase 5)`,
         };
       }
       const best = readJSON(bestPath);
@@ -101,7 +111,7 @@ const GATES = [
 
       return {
         pass  : gateOpen === true,
-        detail: `${lb.entries.length} configs swept | test ${metricName}: ${metricMean} | ${gateLabel}`,
+        detail: `${ranking.entries.length} experiments ranked | test ${metricName}: ${metricMean} | ${gateLabel}`,
       };
     },
   },
@@ -109,7 +119,6 @@ const GATES = [
     skill: '$deploy',
     artifact: 'deploy/deploy-checklist.md',
     check: (cwd) => {
-      // Pre-check: deploy gate must be open in best.json
       const bestPath = OMA.best(cwd);
       if (exists(bestPath)) {
         const best    = readJSON(bestPath) || {};
@@ -128,10 +137,9 @@ const GATES = [
   },
 ];
 
-async function doctor({ cwd = process.cwd() } = {}) {
+async function doctor({ cwd = process.cwd(), migrate = false } = {}) {
   header('oma doctor — Gate Chain Status');
 
-  // ── 1. Check .oma/ exists ─────────────────────────────────────────────────
   section('Workspace');
   if (!exists(OMA.dir(cwd))) {
     fail('.oma/ directory', 'Not found — run `oma setup` first');
@@ -140,7 +148,27 @@ async function doctor({ cwd = process.cwd() } = {}) {
   }
   ok('.oma/', 'Found');
 
-  // ── Standalone mode check ─────────────────────────────────────────────────
+  if (migrate) {
+    section('Migration');
+    const changes = migrateAll(cwd);
+    if (changes.length) {
+      for (const c of changes) ok('Migrated', c);
+    } else {
+      info('Nothing to migrate');
+    }
+    blank();
+  } else if (hasLegacyFiles(cwd) || needsLayoutMigration(cwd)) {
+    warn('Legacy layout', 'old paths or schema — run `oma doctor --migrate`');
+  }
+
+  const index = readJSON(OMA.index(cwd));
+  if (index) {
+    ok('.oma/index.json', `Dashboard — ${(index.active_tracks || []).length} active track(s) (schema ${index.schema_version || '?'})`);
+    if (index.default_track) kv('  Default track', index.default_track);
+  } else {
+    warn('.oma/index.json', 'Missing — run `oma setup` or create from template');
+  }
+
   const standalonePath = path.join(OMA.dir(cwd), 'standalone.json');
   if (exists(standalonePath)) {
     const s = readJSON(standalonePath) || {};
@@ -152,24 +180,29 @@ async function doctor({ cwd = process.cwd() } = {}) {
     blank();
   }
 
-  if (exists(OMA.memory(cwd))) {
-    ok('.oma/memory.md', 'Found (Dead Ends database active)');
-  } else {
-    warn('.oma/memory.md', 'Missing — will be created by $consolidate after first tune/evaluate');
+  const defaultTrack = getDefaultTrackId(cwd);
+  if (defaultTrack) {
+    const memPath = resolveTrackMemoryPath(cwd, defaultTrack);
+    if (exists(memPath)) {
+      ok(`tracks/${defaultTrack}/memory.md`, 'Found (Dead Ends database active)');
+    } else {
+      warn(`tracks/${defaultTrack}/memory.md`, 'Missing — created by oma track open or $loop (consolidate)');
+    }
+
+    const { trackId, loop } = readTrackLoop(cwd, defaultTrack);
+    if (loop) {
+      ok(`tracks/${trackId}/loop.json`, `Iteration loop — lap #${loop.lap ?? '?'} @ ${loop.stage || '?'}${loop.exp_id ? ` (${loop.exp_id})` : ''}`);
+    }
+  } else if (exists(path.join(OMA.dir(cwd), 'loop.json'))) {
+    const loop = readJSON(path.join(OMA.dir(cwd), 'loop.json')) || {};
+    warn('.oma/loop.json', `Legacy root loop — lap #${loop.lap ?? '?'} — run oma doctor --migrate`);
   }
 
-  const loopPath = path.join(OMA.dir(cwd), 'loop.json');
-  if (exists(loopPath)) {
-    const loop = readJSON(loopPath) || {};
-    ok('.oma/loop.json', `Iteration loop — lap #${loop.lap ?? '?'} @ ${loop.stage || '?'}${loop.exp_id ? ` (${loop.exp_id})` : ''}`);
-  }
-
-  // ── 2. Paper extraction status ───────────────────────────────────────────
-  section('Paper Extraction (.oma/paper/)');
-  const paperDir      = path.join(OMA.dir(cwd), 'paper');
+  section('Paper Extraction (requirement/paper/)');
+  const paperDir      = resolvePaperDir(cwd);
   const paperSections = path.join(paperDir, 'raw-sections.json');
   const paperMeta     = path.join(paperDir, 'meta.json');
-  const knowledgePath = path.join(OMA.dir(cwd), 'knowledge.md');
+  const knowledgePath = resolveKnowledgePath(cwd);
 
   if (exists(paperSections)) {
     const meta = readJSON(paperMeta) || {};
@@ -192,35 +225,33 @@ async function doctor({ cwd = process.cwd() } = {}) {
     const kText = readText(knowledgePath) || '';
     const locked = kText.includes('Status: LOCKED');
     if (locked) {
-      ok('knowledge.md', 'LOCKED — literature context active');
+      ok('requirement/knowledge.md', 'LOCKED — literature context active');
     } else {
-      warn('knowledge.md', 'Exists but not yet locked (in-progress $requirement)');
+      warn('requirement/knowledge.md', 'Exists but not yet locked (in-progress $requirement)');
     }
   } else {
-    info('knowledge.md', 'Not yet created — will be produced by $requirement');
+    info('requirement/knowledge.md', 'Not yet created — will be produced by $requirement');
   }
 
-  // ── 3. Codebase status ───────────────────────────────────────────────────
   section('Reference Codebase (.oma/codebase/)');
-  const codebaseDir    = path.join(OMA.dir(cwd), 'codebase');
-  const codebaseConfig = path.join(codebaseDir, 'config.json');
+  const { listTrackCodebases, resolveTrackSrcPath } = require('../utils/codebase');
+  const codebaseConfig = path.join(OMA.dir(cwd), 'codebase', 'config.json');
 
   if (exists(codebaseConfig)) {
-    const cbCfg = readJSON(codebaseConfig) || {};
-    ok('Registered', 'Path A (Adapt) implement enabled');
-    kv('  Source', cbCfg.srcPath || '?');
-    kv('  Primary language', cbCfg.primaryLang || '?');
-    if (cbCfg.registeredAt) kv('  Registered', cbCfg.registeredAt.slice(0, 10));
+    const rows = listTrackCodebases(cwd);
+    ok('Registered', `Path A (Adapt) — ${rows.length} track mapping(s)`);
+    for (const row of rows) {
+      const tag = row.trackId === getDefaultTrackId(cwd) ? ' (default)' : '';
+      kv(`  ${row.trackId || 'legacy'}${tag}`, row.srcPath || '?');
+      if (row.primaryLang) kv('    language', row.primaryLang);
+    }
+    const active = resolveTrackSrcPath(cwd);
+    if (active) kv('  Active srcPath', active);
   } else {
     info('No codebase registered', 'Run `oma index --src <repo-path>` to enable Path A implement');
     info('  Without this, $implement will use Path B (from scratch)');
   }
 
-  // ── 4. Gates + iteration loop ─────────────────────────────────────────────
-  // Two hard gates only: $requirement (enter loop) and the deploy gate
-  // (best.json deployGateOpen, exit loop). The four interior skills are a
-  // mutually-advisory cycle — a blocked interior "gate" is informational, not
-  // a stop.
   section('Gates (2 hard) + Iteration Loop');
   blank();
 
@@ -240,42 +271,36 @@ async function doctor({ cwd = process.cwd() } = {}) {
       fail(`${gate.skill}${tag}`, detail);
     }
     if (gate.skill === '$requirement') reqLocked = pass;
-    if (gate.skill === '$tune')        deployGateOpen = pass;   // passes iff best.json deployGateOpen === true
+    if (gate.skill === '$tune')        deployGateOpen = pass;
   }
 
-  // ── 5. Trajectory summary ─────────────────────────────────────────────────
-  section('Experiment Trajectory');
-  const traj = OMA.trajectory(cwd);
-  if (exists(traj)) {
-    const lines = fs.readFileSync(traj, 'utf8').split('\n').filter(Boolean);
-    info('Total recorded runs', String(lines.length));
-
+  section('Experiment Runs');
+  const running = findRunningExperiments(cwd);
+  const all = listAllResults(cwd);
+  if (all.length) {
+    info('Total results.json', String(all.length));
+    info('Running', String(running.length));
     const phases = {};
-    for (const line of lines) {
-      try {
-        const e = JSON.parse(line);
-        phases[e.phase] = (phases[e.phase] || 0) + 1;
-      } catch { /* skip malformed lines */ }
+    for (const row of all) {
+      const ph = row.results.phase || '?';
+      phases[ph] = (phases[ph] || 0) + 1;
     }
     for (const [phase, count] of Object.entries(phases)) {
       info(`  ${phase}`, String(count));
     }
   } else {
-    info('No trajectory yet', 'trajectory.jsonl does not exist');
+    info('No experiments yet', 'results.json appears when $train starts a GM task');
   }
 
-  // ── 6. Budget tracker from config ─────────────────────────────────────────
-  section('Budget');
-  const configPath = require('path').join(OMA.dir(cwd), 'config.json');
-  if (exists(configPath)) {
-    const cfg = readJSON(configPath);
-    if (cfg) {
-      kv('Project', cfg.project_name);
-      kv('Seeds per config', cfg.seeds_per_config);
-    }
+  section('Project Meta');
+  const { getMeta } = require('../utils/oma-index');
+  const meta = getMeta(cwd);
+  if (meta) {
+    kv('Project', meta.project_name || '—');
+    kv('Seeds per config', String(meta.seeds_per_config ?? '—'));
+    if (meta.metric?.name) kv('Metric', meta.metric.name);
   }
 
-  // ── 7. Verdict ────────────────────────────────────────────────────────────
   blank();
   if (exists(standalonePath)) {
     const s = readJSON(standalonePath) || {};
@@ -283,7 +308,7 @@ async function doctor({ cwd = process.cwd() } = {}) {
   } else if (!reqLocked) {
     log(color.yellow(`  Lock requirements: run ${color.bold('$requirement')} to enter the iteration loop.`));
   } else if (!deployGateOpen) {
-    log(color.green('  Loop open.') + ` iterate ${color.bold('$design ↔ $implement ↔ $train ↔ $tune')} freely — no interior gates.`);
+    log(color.green('  Loop open.') + ` iterate ${color.bold('$loop (design ↔ implement ↔ train ↔ tune)')} freely — no interior gates.`);
     log(color.gray('  Exit to $deploy when best.json deployGateOpen === true (set in $tune Phase 5).'));
   } else {
     log(color.green('  Deploy gate OPEN — ready for $deploy.'));
@@ -291,20 +316,15 @@ async function doctor({ cwd = process.cwd() } = {}) {
   blank();
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function findExperimentsByPhase(expDir, phase) {
-  try {
-    return fs.readdirSync(expDir)
-      .filter((d) => {
-        const resultsPath = require('path').join(expDir, d, 'results.json');
-        if (!exists(resultsPath)) return false;
-        const r = readJSON(resultsPath);
-        return r && r.phase === phase;
-      });
-  } catch {
-    return [];
+function findExperimentsByPhase(cwd, phase) {
+  const found = [];
+  for (const { path: expPath, label } of listAllExperimentDirs(cwd)) {
+    const resultsPath = path.join(expPath, 'results.json');
+    if (!exists(resultsPath)) continue;
+    const r = readJSON(resultsPath);
+    if (r && r.phase === phase) found.push(label);
   }
+  return found;
 }
 
 module.exports = { doctor };

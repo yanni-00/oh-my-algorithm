@@ -3,8 +3,9 @@ _Project: {PROJECT_NAME}_
 _Last updated: {YYYY-MM-DD}_
 
 <!--
-  USAGE: This file is written ONLY by $consolidate.
-  Other skills must READ this file at session start but must NOT modify it.
+  USAGE: Per-track memory — written ONLY by $loop (consolidate) for this design paradigm.
+  Path: .oma/tracks/{track_id}/memory.md
+  Other skills must READ the current track's memory at session start but must NOT modify it.
   Append new rows to tables; never delete existing rows.
 -->
 

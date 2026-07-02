@@ -1,0 +1,24 @@
+{
+  "_comment": "Per-track experiment rollup + tune ranking. Replaces project-level leaderboard.json.",
+  "schema_version": "2.0",
+  "track_id": null,
+  "last_updated": null,
+  "metric_name": null,
+  "higher_is_better": true,
+  "experiments": [
+    {
+      "exp_id": "exp-YYYYMMDD-001",
+      "lap": 1,
+      "phase": "train",
+      "status": "running",
+      "started_at": "[ISO 8601 — written when GM task starts]",
+      "completed_at": null,
+      "gm_task_id": "[Gradmotion task id]",
+      "metric_name": null,
+      "metric_mean": null,
+      "metric_std": null,
+      "config_summary": "[e.g. lr=3e-4, entropy=0.01]",
+      "design_ref": "design/design-YYYYMMDD-001.md"
+    }
+  ]
+}

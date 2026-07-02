@@ -2,59 +2,127 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const readline = require('readline');
+const { OMA, exists, readJSON } = require('../utils/paths');
+const { ensureIndex, writeIndex, readIndex } = require('../utils/oma-index');
 
-// ─── Storage layout ───────────────────────────────────────────────────────────
+// ─── Storage layout (user-provided path) ─────────────────────────────────────
 //
-//  ~/.oma/
-//    xp-index.json          ← global index: [{id, name, stage, description, tags, ...}]
-//    experiences/
-//      deploy-001.md        ← individual experience files (Markdown, human-readable)
-//      deploy-002.md
-//      design-001.md
+//  {experiences_dir}/          ← configured in .oma/index.json or --dir
+//    xp-index.json             ← lightweight index
+//    deploy-001.md             ← individual experience files
 //
-//  Codex workflow:
-//    1. oma xp index --format md      → scan xp-index.json, decide relevance (cheap)
-//    2. oma xp show <id>              → read ~/.oma/experiences/<id>.md (only if relevant)
+//  Configure once:
+//    oma xp init --dir shared/lessons/experiences
+//
+//  Or pass per command:
+//    oma xp add --dir shared/lessons/experiences ...
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-const GLOBAL_XP_DIR     = path.join(os.homedir(), '.oma');
-const GLOBAL_XP_INDEX   = path.join(GLOBAL_XP_DIR, 'xp-index.json');
-const GLOBAL_XP_XP_DIR  = path.join(GLOBAL_XP_DIR, 'experiences');
-
 const VALID_STAGES = ['design', 'tune', 'deploy'];
+const XP_INDEX_NAME = 'xp-index.json';
 
-// ─── Filesystem helpers ───────────────────────────────────────────────────────
-
-function ensureDirs() {
-  fs.mkdirSync(GLOBAL_XP_DIR,    { recursive: true });
-  fs.mkdirSync(GLOBAL_XP_XP_DIR, { recursive: true });
+function normalizeDirRef(cwd, dir) {
+  const abs = path.resolve(cwd, dir);
+  const rel = path.relative(cwd, abs);
+  if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+    return rel.split(path.sep).join('/');
+  }
+  return abs.split(path.sep).join('/');
 }
 
-function xpFilePath(id) {
-  return path.join(GLOBAL_XP_XP_DIR, `${id}.md`);
+function resolveExperiencesAbs(cwd, dirRef) {
+  if (path.isAbsolute(dirRef)) return dirRef;
+  return path.resolve(cwd, dirRef);
+}
+
+function readConfiguredDir(cwd) {
+  const index = readIndex(cwd);
+  return index?.experiences_dir || null;
+}
+
+function resolveXpStore({ cwd = process.cwd(), dirOverride = null } = {}) {
+  const dirRef = dirOverride || readConfiguredDir(cwd);
+  if (!dirRef) {
+    const err = new Error(
+      '经验库路径未配置。请先运行:\n' +
+      '  oma xp init --dir <path>          # 写入 .oma/index.json\n' +
+      '或在本命令加:\n' +
+      '  oma xp <subcmd> --dir <path> ...'
+    );
+    err.code = 'XP_DIR_MISSING';
+    throw err;
+  }
+  const absDir = resolveExperiencesAbs(cwd, dirRef);
+  return {
+    cwd,
+    dirRef,
+    absDir,
+    indexPath: path.join(absDir, XP_INDEX_NAME),
+    xpFilePath: (id) => path.join(absDir, `${id}.md`),
+  };
+}
+
+function ensureXpDirs(store) {
+  fs.mkdirSync(store.absDir, { recursive: true });
+}
+
+function initXpStore(cwd, dir) {
+  if (!dir) {
+    console.error('用法: oma xp init --dir <path>');
+    process.exit(1);
+  }
+  const dirRef = normalizeDirRef(cwd, dir);
+  const store = {
+    absDir: resolveExperiencesAbs(cwd, dirRef),
+    indexPath: path.join(resolveExperiencesAbs(cwd, dirRef), XP_INDEX_NAME),
+  };
+  ensureXpDirs(store);
+  if (!exists(store.indexPath)) {
+    fs.writeFileSync(store.indexPath, '[]\n', 'utf8');
+  }
+
+  if (!exists(OMA.dir(cwd))) {
+    console.error('.oma/ 不存在 — 请先运行 oma setup');
+    process.exit(1);
+  }
+  const index = ensureIndex(cwd);
+  index.experiences_dir = dirRef;
+  writeIndex(cwd, index);
+
+  console.log(`\n✅ 经验库已配置`);
+  console.log(`   路径 : ${dirRef}`);
+  console.log(`   绝对 : ${store.absDir}`);
+  console.log(`   索引 : ${store.indexPath}\n`);
+}
+
+function exitOnMissingDir(e) {
+  if (e.code === 'XP_DIR_MISSING') {
+    console.error(`\n${e.message}\n`);
+    process.exit(1);
+  }
+  throw e;
 }
 
 // ─── Index helpers ────────────────────────────────────────────────────────────
 
-function loadIndex() {
-  if (!fs.existsSync(GLOBAL_XP_INDEX)) return [];
+function loadIndex(store) {
+  if (!fs.existsSync(store.indexPath)) return [];
   try {
-    return JSON.parse(fs.readFileSync(GLOBAL_XP_INDEX, 'utf8'));
+    return JSON.parse(fs.readFileSync(store.indexPath, 'utf8'));
   } catch {
     return [];
   }
 }
 
-function saveIndex(index) {
-  ensureDirs();
-  fs.writeFileSync(GLOBAL_XP_INDEX, JSON.stringify(index, null, 2) + '\n', 'utf8');
+function saveIndex(store, index) {
+  ensureXpDirs(store);
+  fs.writeFileSync(store.indexPath, JSON.stringify(index, null, 2) + '\n', 'utf8');
 }
 
-function generateId(stage) {
-  const idx = loadIndex();
+function generateId(store, stage) {
+  const idx = loadIndex(store);
   const count = idx.filter(e => e.stage === stage).length;
   return `${stage}-${String(count + 1).padStart(3, '0')}`;
 }
@@ -181,7 +249,7 @@ function parseExperienceFile(content) {
  *     oma xp add --file ankle_kd_experience.md --name "ankle-kd-tuning" \
  *                --description "降低 ankle kd 消除颤振" --stage deploy
  *     → Reads content from file, CLI flags override parsed fields.
- *     → Copies file to ~/.oma/experiences/<id>.md with proper header.
+ *     → Copies file to {experiences_dir}/<id>.md with proper header.
  *     → Original file is left in place (not deleted).
  *
  *   Mode B — Interactive / flag-only (no file):
@@ -190,7 +258,14 @@ function parseExperienceFile(content) {
  *
  * Required fields: name, description, stage (any mode, any source).
  */
-async function add({ filePath: filePathArg, stage, nameCli, descriptionCli, tagsCli } = {}) {
+async function add({ cwd, dirOverride, filePath: filePathArg, stage, nameCli, descriptionCli, tagsCli } = {}) {
+  let store;
+  try {
+    store = resolveXpStore({ cwd, dirOverride });
+  } catch (e) {
+    exitOnMissingDir(e);
+  }
+
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   console.log('\n📚 OMA 经验库 — 添加新经验\n');
@@ -244,7 +319,7 @@ async function add({ filePath: filePathArg, stage, nameCli, descriptionCli, tags
   //
   // Codex can answer on the user's behalf — the prompt is intentionally simple.
 
-  const existingByName = loadIndex().find(e => e.name === name);
+  const existingByName = loadIndex(store).find(e => e.name === name);
   if (existingByName) {
     console.log('');
     console.log(`⚠️  已存在同名经验:`);
@@ -274,10 +349,10 @@ async function add({ filePath: filePathArg, stage, nameCli, descriptionCli, tags
 
     if (dupAnswer === 'o') {
       // Remove old file and index entry
-      const oldFile = xpFilePath(existingByName.id);
+      const oldFile = store.xpFilePath(existingByName.id);
       if (fs.existsSync(oldFile)) fs.unlinkSync(oldFile);
-      const newIndex = loadIndex().filter(e => e.id !== existingByName.id);
-      saveIndex(newIndex);
+      const newIndex = loadIndex(store).filter(e => e.id !== existingByName.id);
+      saveIndex(store, newIndex);
       console.log(`   已删除旧经验: ${existingByName.id}`);
     }
     // dupAnswer === 'k': fall through, new ID will be assigned below
@@ -340,11 +415,11 @@ async function add({ filePath: filePathArg, stage, nameCli, descriptionCli, tags
   rl.close();
 
   const tags = tags_raw.split(',').map(t => t.trim()).filter(Boolean);
-  const id   = generateId(stage_);
+  const id   = generateId(store, stage_);
 
-  // ── Write experience file to ~/.oma/experiences/<id>.md ─────────────────────
-  ensureDirs();
-  const destPath = xpFilePath(id);
+  // ── Write experience file ───────────────────────────────────────────────────
+  ensureXpDirs(store);
+  const destPath = store.xpFilePath(id);
   const now = new Date().toISOString();
 
   let fileContent;
@@ -396,28 +471,36 @@ async function add({ filePath: filePathArg, stage, nameCli, descriptionCli, tags
     added_at: now,
     source_project: src || null,
   };
-  const index = loadIndex();
+  const index = loadIndex(store);
   index.push(indexEntry);
-  saveIndex(index);
+  saveIndex(store, index);
 
   console.log(`\n✅ 经验已归档`);
   console.log(`   ID   : ${id}`);
   console.log(`   名称 : ${name}`);
   console.log(`   文件 : ${destPath}`);
-  console.log(`   索引 : ${GLOBAL_XP_INDEX}\n`);
+  console.log(`   索引 : ${store.indexPath}`);
+  console.log(`   库   : ${store.dirRef}\n`);
 }
 
 /**
  * oma xp tag <id> <tag1> [tag2 ...]
  * Add tags to an existing experience (updates index + rewrites file header).
  */
-function tagCmd({ id, newTags } = {}) {
+function tagCmd({ cwd, dirOverride, id, newTags } = {}) {
+  let store;
+  try {
+    store = resolveXpStore({ cwd, dirOverride });
+  } catch (e) {
+    exitOnMissingDir(e);
+  }
+
   if (!id || !newTags?.length) {
     console.error('用法: oma xp tag <id> <tag1> [tag2 ...]');
     process.exit(1);
   }
 
-  const index = loadIndex();
+  const index = loadIndex(store);
   const pos = index.findIndex(e => e.id === id);
   if (pos === -1) {
     console.error(`未找到经验: ${id}`);
@@ -433,10 +516,10 @@ function tagCmd({ id, newTags } = {}) {
 
   added.forEach(t => existing.add(t));
   index[pos].tags = [...existing];
-  saveIndex(index);
+  saveIndex(store, index);
 
   // Rewrite the experience file to reflect new tags
-  const filePath = xpFilePath(id);
+  const filePath = store.xpFilePath(id);
   if (fs.existsSync(filePath)) {
     let content = fs.readFileSync(filePath, 'utf8');
     const tagLine = `**标签**: ${index[pos].tags.map(t => `\`${t}\``).join(' ')}  `;
@@ -456,8 +539,15 @@ function tagCmd({ id, newTags } = {}) {
  *
  * Codex reads this first, then decides which IDs to `show` for full content.
  */
-function indexCmd({ stage, tag, format = 'table' } = {}) {
-  let entries = loadIndex();
+function indexCmd({ cwd, dirOverride, stage, tag, format = 'table' } = {}) {
+  let store;
+  try {
+    store = resolveXpStore({ cwd, dirOverride });
+  } catch (e) {
+    exitOnMissingDir(e);
+  }
+
+  let entries = loadIndex(store);
 
   if (stage) entries = entries.filter(e => e.stage === stage);
   if (tag)   entries = entries.filter(e => (e.tags || []).includes(tag));
@@ -466,7 +556,7 @@ function indexCmd({ stage, tag, format = 'table' } = {}) {
     if (stage || tag) {
       console.log(`没有符合条件的经验（stage=${stage || '*'}, tag=${tag || '*'}）。`);
     } else {
-      console.log('经验库为空。运行 `oma xp add` 添加第一条经验。');
+      console.log('经验库为空。运行 `oma xp init --dir <path>` 配置路径，再 `oma xp add` 添加经验。');
     }
     return;
   }
@@ -512,20 +602,27 @@ function indexCmd({ stage, tag, format = 'table' } = {}) {
  * Print the full Markdown experience file to stdout.
  * Codex reads this after scanning the index and deciding the entry is relevant.
  */
-function show({ id } = {}) {
+function show({ cwd, dirOverride, id } = {}) {
+  let store;
+  try {
+    store = resolveXpStore({ cwd, dirOverride });
+  } catch (e) {
+    exitOnMissingDir(e);
+  }
+
   if (!id) {
     console.error('用法: oma xp show <id>  (例: oma xp show deploy-001)');
     process.exit(1);
   }
 
   // Verify it's in the index
-  const idx = loadIndex().find(e => e.id === id);
+  const idx = loadIndex(store).find(e => e.id === id);
   if (!idx) {
     console.error(`未找到经验: ${id}`);
     process.exit(1);
   }
 
-  const filePath = xpFilePath(id);
+  const filePath = store.xpFilePath(id);
   if (!fs.existsSync(filePath)) {
     console.error(`经验文件丢失: ${filePath}  (索引中有记录，但文件不存在 — 运行 oma xp reindex 修复)`);
     process.exit(1);
@@ -540,7 +637,14 @@ function show({ id } = {}) {
  *   Pass 1: match index fields (id, name, description, tags) — cheap
  *   Pass 2: read matching files for full-text match — only for index hits
  */
-function search({ query, stage, format = 'md' } = {}) {
+function search({ cwd, dirOverride, query, stage, format = 'md' } = {}) {
+  let store;
+  try {
+    store = resolveXpStore({ cwd, dirOverride });
+  } catch (e) {
+    exitOnMissingDir(e);
+  }
+
   if (!query) {
     console.error('用法: oma xp search <关键词>');
     process.exit(1);
@@ -554,13 +658,13 @@ function search({ query, stage, format = 'md' } = {}) {
   }
 
   function scoreFile(id) {
-    const fp = xpFilePath(id);
+    const fp = store.xpFilePath(id);
     if (!fs.existsSync(fp)) return 0;
     const text = fs.readFileSync(fp, 'utf8').toLowerCase();
     return terms.reduce((s, t) => s + (text.includes(t) ? 1 : 0), 0);
   }
 
-  let entries = loadIndex();
+  let entries = loadIndex(store);
   if (stage) entries = entries.filter(e => e.stage === stage);
 
   // Score each entry: index score (weight 2x) + file content score (weight 1x)
@@ -610,49 +714,60 @@ function list(opts) {
  * oma xp delete <id>
  * Remove experience file and update index.
  */
-function del({ id } = {}) {
+function del({ cwd, dirOverride, id } = {}) {
+  let store;
+  try {
+    store = resolveXpStore({ cwd, dirOverride });
+  } catch (e) {
+    exitOnMissingDir(e);
+  }
+
   if (!id) {
     console.error('用法: oma xp delete <id>');
     process.exit(1);
   }
 
-  const index = loadIndex();
+  const index = loadIndex(store);
   const filtered = index.filter(e => e.id !== id);
   if (filtered.length === index.length) {
     console.error(`未找到经验: ${id}`);
     process.exit(1);
   }
 
-  // Remove file
-  const filePath = xpFilePath(id);
+  const filePath = store.xpFilePath(id);
   if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
 
-  saveIndex(filtered);
+  saveIndex(store, filtered);
   console.log(`✅ 已删除经验: ${id}`);
 }
 
 /**
  * oma xp reindex
- * Rebuild xp-index.json by scanning all .md files in experiences/.
- * Use after manual edits to files or after migration from old JSONL format.
+ * Rebuild xp-index.json by scanning all .md files in the configured directory.
  */
-function reindex() {
-  if (!fs.existsSync(GLOBAL_XP_XP_DIR)) {
-    console.log('experiences/ 目录不存在，索引为空。');
-    saveIndex([]);
+function reindex({ cwd, dirOverride } = {}) {
+  let store;
+  try {
+    store = resolveXpStore({ cwd, dirOverride });
+  } catch (e) {
+    exitOnMissingDir(e);
+  }
+
+  if (!fs.existsSync(store.absDir)) {
+    console.log('经验库目录不存在，索引为空。');
+    saveIndex(store, []);
     return;
   }
 
-  const files = fs.readdirSync(GLOBAL_XP_XP_DIR).filter(f => f.endsWith('.md'));
+  const files = fs.readdirSync(store.absDir).filter(f => f.endsWith('.md'));
   const entries = [];
 
   for (const file of files) {
     const id = file.replace(/\.md$/, '');
-    const content = fs.readFileSync(path.join(GLOBAL_XP_XP_DIR, file), 'utf8');
+    const content = fs.readFileSync(path.join(store.absDir, file), 'utf8');
 
-    // Extract fields from Markdown header
     const get = (key) => {
       const m = content.match(new RegExp(`\\*\\*${key}\\*\\*:\\s*(.+?)\\s*$`, 'm'));
       return m ? m[1].replace(/\s*\*+$/, '').trim() : null;
@@ -662,11 +777,9 @@ function reindex() {
     const name  = titleMatch?.[2]?.trim() || id;
     const stage = get('阶段') || 'deploy';
 
-    // Description is the first line of the 描述 section
     const descMatch = content.match(/## 描述\s*\n+(.+)/);
     const description = descMatch?.[1]?.trim() || '';
 
-    // Tags: extract from backtick list
     const tagMatch = content.match(/\*\*标签\*\*:\s*(.+)/);
     const tags = tagMatch
       ? [...tagMatch[1].matchAll(/`([^`]+)`/g)].map(m => m[1])
@@ -680,19 +793,22 @@ function reindex() {
     entries.push({ id, name, stage, robot_type, task, description, tags, added_at, source_project });
   }
 
-  saveIndex(entries);
-  console.log(`✅ 索引已重建：${entries.length} 条经验 → ${GLOBAL_XP_INDEX}`);
+  saveIndex(store, entries);
+  console.log(`✅ 索引已重建：${entries.length} 条经验 → ${store.indexPath}`);
 }
 
 // ─── Help ─────────────────────────────────────────────────────────────────────
 
 function help() {
   console.log(`
-oma xp — 全局经验库管理
+oma xp — 项目经验库管理
 
-存储结构:
-  ~/.oma/xp-index.json         轻量索引（id / name / description / stage / tags）
-  ~/.oma/experiences/<id>.md   每条经验的完整 Markdown 文件
+存储结构（用户指定路径，写入 .oma/index.json experiences_dir）:
+  {experiences_dir}/xp-index.json    轻量索引
+  {experiences_dir}/<id>.md          每条经验的 Markdown 文件
+
+首次配置:
+  oma xp init --dir shared/lessons/experiences
 
 Codex 推荐使用流程:
   1. oma xp index --format md          先看索引，判断哪些经验相关
@@ -700,37 +816,23 @@ Codex 推荐使用流程:
   3. oma xp search "<词>" --stage <s>  有明确关键词时直接全文搜索
 
 用法:
-  oma xp add [--file <path>] [--stage <s>] [--name <n>] [--description <d>] [--tag <t>]
-                                               归档经验（name/description/stage 必填）
-                                               --file: 指定 Codex 生成的草稿文件路径
+  oma xp init --dir <path>                     配置经验库路径（写入 index.json）
+  oma xp add [--dir <path>] [--file <path>] ...  归档经验
   oma xp tag <id> <tag1> [tag2 ...]            为已有经验追加标签
-  oma xp index [--stage <s>] [--tag <t>]       打印轻量索引
-               [--format table|md|json]
-  oma xp show <id>                             查看经验完整内容
-  oma xp search <关键词> [--stage <s>]          两阶段搜索（索引 + 全文）
-  oma xp list                                  同 index（别名）
-  oma xp delete <id>                           删除经验
-  oma xp reindex                               从 experiences/*.md 重建索引
+  oma xp index [--dir <path>] [--stage <s>]      打印轻量索引
+  oma xp show <id> [--dir <path>]
+  oma xp search <关键词> [--dir <path>] [--stage <s>]
+  oma xp list / delete / reindex [--dir <path>]
+
+  --dir <path>   覆盖 index.json 中的 experiences_dir（单次命令）
 
 有效阶段: ${VALID_STAGES.join(', ')}
 
 示例:
-  # 两步工作流（推荐）
-  # Step 1: 在 Codex 中说 "oma xp --generate 帮我把本次 ankle 调参整理成经验"
-  #         → Codex 生成 ankle_kd_experience.md 到当前目录
-  # Step 2: 归档
-  oma xp add --file ankle_kd_experience.md --name "ankle-kd-tuning" \
+  oma xp init --dir lab/experiences
+  oma xp add --file ankle_kd_experience.md --name "ankle-kd-tuning" \\
              --description "降低 ankle kd 消除颤振" --stage deploy
-
-  # 纯 flag 模式（无文件）
-  oma xp add --stage deploy --name ankle-kd-tuning --description "降低 ankle kd 消除颤振" --tag ankle,kd
-
-  # 纯交互模式
-  oma xp add --stage tune
-
-  oma xp tag deploy-003 biped locomotion
   oma xp index --stage deploy --format md
-  oma xp search "ankle kd" --stage deploy
   oma xp show deploy-001
 `);
 }
@@ -739,28 +841,32 @@ Codex 推荐使用流程:
 
 async function xp(args = [], flags = {}) {
   const sub         = args[0];
+  const cwd         = flags.cwd || process.cwd();
+  const dirOverride = flags['--dir'] || null;
   const stage       = flags['--stage']       || null;
   const tag         = flags['--tag']         || null;
   const format      = flags['--format']      || undefined;
   const nameCli     = flags['--name']        || null;
   const descCli     = flags['--description'] || flags['--desc'] || null;
-  const fileCli     = flags['--file']        || null;   // ← new: path to generated .md
+  const fileCli     = flags['--file']        || null;
   const id          = args[1] || null;
   const newTags     = args.slice(2);
   const tagsCli     = tag || null;
+  const ctx         = { cwd, dirOverride };
 
   switch (sub) {
-    case 'add':     return add({ filePath: fileCli, stage, nameCli, descriptionCli: descCli, tagsCli });
-    case 'tag':     return tagCmd({ id, newTags });
-    case 'index':   return indexCmd({ stage, tag, format });
-    case 'list':    return list({ stage, tag, format });
-    case 'search':  return search({ query: args.slice(1).join(' ') || flags['--query'], stage, format });
-    case 'show':    return show({ id });
+    case 'init':    return initXpStore(cwd, dirOverride);
+    case 'add':     return add({ ...ctx, filePath: fileCli, stage, nameCli, descriptionCli: descCli, tagsCli });
+    case 'tag':     return tagCmd({ ...ctx, id, newTags });
+    case 'index':   return indexCmd({ ...ctx, stage, tag, format });
+    case 'list':    return list({ ...ctx, stage, tag, format });
+    case 'search':  return search({ ...ctx, query: args.slice(1).join(' ') || flags['--query'], stage, format });
+    case 'show':    return show({ ...ctx, id });
     case 'delete':
-    case 'del':     return del({ id });
-    case 'reindex': return reindex();
+    case 'del':     return del({ ...ctx, id });
+    case 'reindex': return reindex(ctx);
     default:        return help();
   }
 }
 
-module.exports = { xp, GLOBAL_XP_INDEX, GLOBAL_XP_XP_DIR, VALID_STAGES };
+module.exports = { xp, resolveXpStore, VALID_STAGES };

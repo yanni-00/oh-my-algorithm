@@ -16,7 +16,7 @@
 const https   = require('https');
 const fs      = require('fs');
 const path    = require('path');
-const { OMA, exists, readText, readJSON } = require('../utils/paths');
+const { OMA, exists, readText, readJSON, resolveRequirementsPath, resolveKnowledgePath, resolvePaperDir, resolveTrackDesignDir, resolveTrackMemoryPath } = require('../utils/paths');
 const { header, section, ok, warn, fail, info, blank, log, kv, table, color } = require('../utils/print');
 
 const SS_BASE  = 'api.semanticscholar.org';
@@ -41,7 +41,7 @@ async function search({
     process.exit(1);
   }
 
-  const cacheDir = path.join(OMA.dir(cwd), 'paper', 'search-cache');
+  const cacheDir = path.join(resolvePaperDir(cwd), 'search-cache');
   fs.mkdirSync(cacheDir, { recursive: true });
 
   // ── 1. Build query list ──────────────────────────────────────────────────
@@ -202,7 +202,7 @@ function querySemanticScholar(query, limit, yearFrom) {
 // ── Query derivation from knowledge.md ───────────────────────────────────────
 
 function deriveQueriesFromKnowledge(cwd) {
-  const knowledgePath = path.join(OMA.dir(cwd), 'knowledge.md');
+  const knowledgePath = resolveKnowledgePath(cwd);
   if (!exists(knowledgePath)) return [];
 
   const text    = readText(knowledgePath) || '';

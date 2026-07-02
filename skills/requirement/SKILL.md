@@ -5,8 +5,8 @@
 **Gate in**: None. This is the entry point of the OMA lifecycle.
 **Standalone entry**: Always allowed. If no paper is available, ask for 3 fields: task description, primary metric, hardware target.
 **Gate out**: Creates two locked artifacts:
-- `.oma/knowledge.md` — external literature knowledge (read-only after this skill)
-- `.oma/requirements.md` — project constraints and success criteria (gate chain source)
+- `.oma/requirement/knowledge.md` — external literature knowledge (read-only after this skill)
+- `.oma/requirement/requirements.md` — project constraints and success criteria (gate chain source)
 
 ---
 
@@ -35,8 +35,8 @@ Phase 5: Lock both artifacts → open gate to $design
 ### 1a. Check for pre-extracted content
 
 First, check if `oma extract` was already run:
-- If `.oma/paper/raw-sections.json` exists → read it and skip to Phase 2.
-- If `.oma/paper/knowledge-draft.md` exists → read it and skip to Phase 3.
+- If `.oma/requirement/paper/raw-sections.json` exists → read it and skip to Phase 2.
+- If `.oma/requirement/paper/knowledge-draft.md` exists → read it and skip to Phase 3.
 
 ### 1b. Request paper if not pre-extracted
 
@@ -76,7 +76,7 @@ If a section cannot be found, mark it as `[not found]` and note which informatio
 
 ## Phase 2 — Synthesize knowledge.md
 
-Using the extracted sections, produce `.oma/knowledge.md` with the following schema. Be specific — extract actual numbers, dataset names, metric formulas from the paper text. Do not paraphrase vaguely.
+Using the extracted sections, produce `.oma/requirement/knowledge.md` with the following schema. Be specific — extract actual numbers, dataset names, metric formulas from the paper text. Do not paraphrase vaguely.
 
 ```markdown
 # Knowledge Base
@@ -142,7 +142,7 @@ If any check fails, re-read the relevant section more carefully before continuin
 
 ## Phase 3 — Pre-fill requirements.md draft
 
-Using `knowledge.md`, produce a draft of `.oma/requirements.md` with every field that can be inferred from the paper pre-populated. Mark each field's source explicitly.
+Using `knowledge.md`, produce a draft of `.oma/requirement/requirements.md` with every field that can be inferred from the paper pre-populated. Mark each field's source explicitly.
 
 Source tags:
 - `[from paper]` — directly taken from paper's Experiments section
@@ -288,7 +288,7 @@ _Next step: run $design_
 
 ### 5c. Initialize memory.md Dead End Seeds
 
-If `.oma/memory.md` does not yet exist, create it from the template and pre-populate the Dead Ends table with entries from `knowledge.md`'s "Dead End Seeds" section. Mark each with source `[from paper]`.
+If `.oma/tracks/{track_id}/memory.md` does not yet exist, create it from the template and pre-populate the Dead Ends table with entries from `knowledge.md`'s "Dead End Seeds" section. Mark each with source `[from paper]`.
 
 ### 5d. Sanity checks before completion
 

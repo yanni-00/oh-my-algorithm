@@ -1,6 +1,6 @@
 # oh-my-algorithm (OMA)
 
-> 机器人强化学习算法开发的全流程编排层 · A Codex-native orchestration layer for robot RL algorithm development
+> 机器人强化学习算法开发的全流程编排层 · An agent-native orchestration layer for robot RL algorithm development
 
 [![Node.js](https://img.shields.io/badge/runtime-Node.js-green)](https://nodejs.org)
 [![Codex](https://img.shields.io/badge/powered%20by-Codex%20CLI-blue)](https://github.com/openai/codex)
@@ -10,15 +10,18 @@
 
 ## 什么是 OMA？
 
-**oh-my-algorithm (OMA)** 是一个构建在 [Codex CLI](https://github.com/openai/codex) 之上的机器人算法开发工作流编排层。它将机器人强化学习开发的完整生命周期（需求 → 设计 → 实现 → 训练 → 调优 → 部署）拆分为独立的、上下文感知的 Codex skill，并通过门控状态机管理流程推进。
+**oh-my-algorithm (OMA)** 是一套**面向 Agent 的**机器人算法开发工作流编排层。它将机器人强化学习开发拆分为独立、上下文感知的阶段 skill，用**两个硬门控**夹着一个 **`$design ↔ $implement ↔ $train ↔ $tune` 迭代环**管理流程推进，最终经 `$deploy` 完成 Sim2Real 验证。
 
-OMA 不是框架，不是库。它是一套**开发工作流协议**：用结构化的阶段状态文件、技术文档模板和 skill 提示词，让 Codex 在每个阶段都能做出高质量、领域正确的决策。
+OMA 最初在 [Codex CLI](https://github.com/openai/codex) 上打磨成型，但架构本身是**Agent 泛化的**——同一套协议可运行在 [Codex](https://github.com/openai/codex)、[Cursor](https://cursor.com)、[Claude Code](https://docs.anthropic.com/en/docs/claude-code) 乃至你自建的 Agent 上。`oma setup -p <platform>` 按各平台的提示词落点生成路由与 skill，CLI 与 `.oma/` 状态层保持不变。
+
+OMA 不是框架，不是库。它是一套**开发工作流协议**：用结构化的阶段状态文件、技术文档模板和 skill 提示词，让 Agent 在每个阶段都能做出高质量、领域正确的决策。
 
 ### 核心特性
 
-- **门控生命周期**：六个标准开发阶段，前置条件检查确保不跳步骤
-- **单阶段直入**：`oma go <stage>` 绕过门控直接进入任意阶段
-- **全局经验库**：`oma xp` 跨项目积累 design/tune/deploy 经验；索引与内容分离，Codex 先扫索引再按需读全文
+- **Agent 泛化架构**：同一套 `.oma/` 状态与 CLI，适配 Codex、Cursor、Claude Code 及自定义 Agent（`oma setup -p`）
+- **双硬门控 + 迭代环**：`$requirement` 锁定后进入环内；环内 `$design ↔ $implement ↔ $train ↔ $tune` 可任意跳转；`best.json` 达标后退出至 `$deploy`
+- **单阶段直入 / 免需求进环**：`oma go <stage>` 或 `oma go loop` 绕过门控快速迭代
+- **项目经验库**：`oma xp` 路径由用户配置（`experiences_dir`）；索引与内容分离
 - **机器人 RL 优先**：控制频率、自由度、Sim2Real gap、奖励函数设计是一等公民
 - **Gradmotion 原生集成**：gm CLI、Isaac GYM 镜像、A10 GPU 任务创建规范内置
 - **零外部依赖**：CLI 仅使用 Node.js 内置模块
@@ -56,22 +59,62 @@ oma setup
 
 `oma setup` 会创建 `.oma/` 目录结构并引导你完成初始配置。
 
-### 2. 启动 Codex 并开始需求阶段
+### 2. 启动 Agent 并开始需求阶段
+
+在你选用的 Agent 环境中打开项目（Codex / Cursor / Claude Code 等），Agent 会读取平台对应的提示词文件，自动识别项目阶段并进入 requirement skill：
 
 ```bash
+# Codex CLI 示例
 codex
-# Codex 读取 AGENTS.md，自动识别项目阶段，进入 requirement skill
+# Agent 读取 AGENTS.md，自动识别项目阶段，进入 requirement skill
+
+# Cursor：在项目目录打开 Cursor，oma-core 规则与 skills 自动注入
+# Claude Code：oma setup -p claude-code 后读取 CLAUDE.md
 ```
 
 ### 3. 按阶段推进（门控模式）
 
-完成每个阶段后，Codex skill 会输出结构化文档到 `.oma/` 目录，通过门控条件后自动解锁下一阶段：
+OMA 不是一条直线，而是 **两个硬门控** 夹着一个 **自由迭代环**：
 
 ```
-requirement → design → implement → train → tune → deploy
+$requirement  →  requirements.md + knowledge.md  (LOCKED)
+        │
+        ▼   ══ 硬门控（进环）: requirements.md LOCKED ══
+┌─────────────── 迭代环（一圈 ≈ 一个 exp_id）────────────────────────┐
+│                                                                    │
+│   $design ──→ $implement ──→ $train ──→ $tune                      │
+│      ▲   (delta)   │  (code)    │ (gm)    │ (sweep/analyse)        │
+│      │             │            │         │                        │
+│      └─────────────┴────────────┴─────────┘  数据驱动，可任意回跳     │
+│                                                                    │
+│   每圈记录: hypothesis + change + result + conclusion (experiment.json) │
+│   环状态指针: .oma/tracks/{track_id}/loop.json                      │
+│   仪表盘: .oma/index.json  (meta / active_tracks / closed_tracks)   │
+└────────────────────────────────┬───────────────────────────────────┘
+                                 ▼   ══ 硬门控（出环）: best.json deployGateOpen ══
+                      $deploy → Sim2Real 测试 → 真机 → design-feedback（再进环）
 ```
 
-### 4. 单阶段直入（绕过门控）
+- **进环硬门控**：`requirements.md` + `knowledge.md` 锁定后，才能进入 `$design`/`$implement`/`$train`/`$tune`
+- **环内软门控**：四阶段互为建议，不因缺上游产物而阻断（例如 `$tune` 发现问题可直接回 `$design` 改 delta）
+- **出环硬门控**：`$tune` 写出 `best.json` 且 `deployGateOpen === true` 后，才能进入 `$deploy`
+
+### 4. 直接进入迭代环（跳过需求阶段）
+
+已有代码库、只想快速实验时，可免 `$requirement` 直接进环：
+
+```bash
+oma go loop                                    # 从 $design 开始，lap 1
+oma go loop --stage tune --track gait-clock --reason "步态时钟路线"
+oma track open gait-clock --label "步态时钟驱动"   # 新开设计范式 track
+oma track list                                 # 活跃/封闭 tracks
+oma status                                     # 查看 index + 默认 track 的 lap
+oma go off                                     # 退出 standalone（保留 track loop.json）
+```
+
+`oma go loop` 会确保 track 存在、写 `.oma/tracks/{id}/loop.json` 与 `.oma/standalone.json`，豁免进环硬门控；**出环硬门控仍然有效**。项目配置在 `index.json` 的 `meta` 中；Agent 首次进环时会确认最小种子。
+
+### 5. 单阶段直入（绕过门控）
 
 ```bash
 # 直接进入训练阶段，无需完整前置
@@ -93,29 +136,33 @@ oma go off
 初始化 OMA 项目结构。
 
 ```bash
-oma setup                 # 默认 codex
-oma setup -p cursor       # 适配 Cursor
+oma setup                      # 默认 codex 平台
+oma setup -p cursor            # 适配 Cursor Agent
+oma setup -p claude-code       # 适配 Claude Code
 ```
 
 在当前目录创建：
 - `.oma/` — 项目状态目录（所有平台共用）
-- `AGENTS.md` — 主提示词（如不存在则从模板生成）
+- 平台 Agent 提示词 — `AGENTS.md` / `.cursor/rules/oma-core.mdc` / `CLAUDE.md` 等（如不存在则从模板生成）
 
 #### 平台 `-p`
 
 | 平台 | 行为规范层落点 | 路由方式 |
 |------|----------------|----------|
-| `codex`（默认） | `.oma/skills/*/SKILL.md` | `AGENTS.md` 关键词路由表 |
-| `meta-agent` | `.oma/skills/*/SKILL.md` | `AGENT.md` 关键词路由表 |
-| `cursor` | `.cursor/rules/oma-core.mdc` + `.cursor/skills/*/SKILL.md` | `alwaysApply` 规则 + skill frontmatter `description` 自动选用 |
+| `codex`（默认） | `.codex/skills/` — 3 核心 + `loop/phases/` + `adapters/` | `AGENTS.md` 关键词路由表 |
+| `meta-agent` | 同上 | `AGENT.md` 关键词路由表 |
+| `cursor` | `.cursor/rules/oma-core.mdc` + `.cursor/skills/`（`requirement`/`loop`/`deploy` + `loop-*` 阶段） | `alwaysApply` 规则 + skill frontmatter |
+| `claude-code` | `.claude/skills/` | `CLAUDE.md` 关键词路由表 |
+
+**技能架构**：包内 `skills/`（核心 + `skills/reference/` 实验室技能）。**`oma setup` 只把核心技能注入 agent 平台目录，不写 `.oma/`**。Reference 仅 `oma reference install` 时注入（如 `.cursor/skills/reference-experiment-analysis/`）。
 
 **为什么 cursor 不一样**：Cursor 不稳定加载根目录 `AGENTS.md`，也不认关键词路由表；它每轮注入 `.cursor/rules/*.mdc`（`alwaysApply`），并按 `.cursor/skills/*/SKILL.md` 的 frontmatter `description` 语义匹配自动选用 skill。因此 `oma setup -p cursor` 会：
 
-1. 把 `AGENTS.md`（STARTUP / 门控链 / 状态文件 / 路由）改写成 `.cursor/rules/oma-core.mdc`（`alwaysApply: true`，skill 路径指向 `.cursor/skills/`）；
-2. 给每个阶段 skill 注入 `name` + `description` frontmatter，写入 `.cursor/skills/<stage>/SKILL.md`（`gradmotion` 已自带 frontmatter 原样保留；废弃的 `evaluate` 不导出）；
+1. 把 `AGENTS.md` 改写成 `.cursor/rules/oma-core.mdc`（`alwaysApply: true`）；
+2. 安装 `requirement`、`loop`、`deploy` 及 `loop-design` … `loop-consolidate` 到 `.cursor/skills/`（`adapters/` 不单独导出；参考技能用 `oma reference install -p cursor`）；
 3. 仍写一份根目录 `AGENTS.md` 作 `@AGENTS.md` 兜底；
-4. `.oma/` 状态目录与 CLI（`oma go` / `status` / `doctor` 等）完全不变；
-5. `.gitignore` 默认忽略 OMA 生成的 `.cursor/rules/oma-core.mdc`、`.cursor/skills/`（保持私有，不影响你自己的 `.cursor/` 文件）。
+4. `.oma/` 状态目录与 CLI 完全不变；
+5. `.gitignore` 忽略 oma 注入的 agent 资产（`.cursor/skills/`、`.codex/skills/` 等），**不含** `.oma/skills/`（已不再生成）。
 
 skill 的 `description` 文案由 `configs/cursor-skill-meta.json` 维护，可按需改触发话术。
 
@@ -124,8 +171,8 @@ skill 的 `description` 文案由 `configs/cursor-skill-meta.json` 维护，可�
 ### 自定义习惯：`--overlay`
 
 OMA 只规定**大过程**（门控/迭代环）和**各阶段沉淀的 skill**；`oma setup -p` 按平台机制生成
-agent 文件并放好 skill。如果你在某些子过程里有自己的习惯/自定义行为，**写成一个 markdown 文件**，
-用 `--overlay` 传入即可——OMA 原样追加到平台 agent 文件末尾，让 codex/cursor 看到。
+Agent 提示词文件并放好 skill。如果你在某些子过程里有自己的习惯/自定义行为，**写成一个 markdown 文件**，
+用 `--overlay` 传入即可——OMA 原样追加到平台 Agent 提示词文件末尾，让各平台 Agent 看到。
 
 ```bash
 oma setup -p cursor --overlay ./my-habits.md
@@ -135,13 +182,15 @@ oma setup -p codex  --overlay ./my-habits.md
 追加位置按平台：codex → `AGENTS.md` 末尾；cursor → `.cursor/rules/oma-core.mdc` 末尾；
 claude-code → `CLAUDE.md` 末尾。内容包在受管区
 `<!-- OMA:USER-OVERLAY:BEGIN…END -->` 里，重跑 `oma setup --overlay` 幂等替换，不重复。
-OMA 不解析这个文件——你写什么，agent 就看到什么。
+OMA 不解析这个文件——你写什么，Agent 就看到什么。
 
 ---
 
-### `oma go <stage>`
+### `oma go <stage>` / `oma go loop`
 
-**单阶段直入**：不经过门控，直接进入指定阶段。Codex 启动后读取 `.oma/standalone.json`，自动切换为 advisory（建议性）门控模式。
+**单阶段直入**：不经过门控，直接进入指定阶段。Agent 会话启动后读取 `.oma/standalone.json`，自动切换为 advisory（建议性）门控模式。
+
+**直接进入迭代环**（`oma go loop`）：豁免 `$requirement` 硬门控，初始化或恢复 `.oma/tracks/{track_id}/loop.json`，从 `$design`/`$implement`/`$train`/`$tune` 之一开始自由迭代。
 
 ```bash
 oma go requirement          # 进入需求阶段
@@ -152,49 +201,57 @@ oma go tune                 # 进入调优阶段
 oma go deploy               # 进入部署阶段
 oma go consolidate          # 进入汇总阶段
 
+oma go loop                                    # 免需求，进入迭代环（默认 $design）
+oma go loop --stage implement --reason "修 reward hacking"
 oma go train --reason "从已有 checkpoint 继续"  # 附加原因
-oma go status               # 查看当前 standalone 状态
-oma go off                  # 关闭 standalone，恢复门控
+oma go status               # 查看 standalone / index / track loop 状态
+oma go off                  # 关闭 standalone，恢复门控（保留 track loop.json）
 ```
 
-有效阶段：`requirement` `design` `implement` `train` `tune` `deploy` `consolidate`
+有效阶段：`requirement` `design` `implement` `train` `tune` `deploy` `consolidate` `loop`
+
+### `oma track`
+
+管理**设计范式级**并行路线（track ≠ reward 调参 lap）。`oma track open` 会创建 `tracks/{id}/` 完整子树（loop、memory、experiments-index、design/、experiments/）。
+
+```bash
+oma track open gait-clock --label "步态时钟驱动"
+oma track open redirect-data --label "重定向数据训练"
+oma track list
+oma track switch gait-clock
+oma track close minimal-reward --deliverable "exp_A08 deploy"
+```
+
+遗留项目若仍有根目录 `config.json` / `loop.json`：`oma doctor --migrate`。
 
 ---
 
-### `oma xp` — 全局经验库
+### `oma xp` — 项目经验库
 
-跨项目积累 design / tune / deploy 三个阶段的成功经验，存储于 `~/.oma/`。
+经验库存储路径由用户指定，写入 `.oma/index.json` 的 `experiences_dir`（不再使用固定的 `~/.oma/`）。
+
+#### 首次配置
+
+```bash
+oma xp init --dir lab/experiences    # 创建目录 + xp-index.json，写入 index.json
+```
 
 #### 存储结构
 
 ```
-~/.oma/
-  xp-index.json          ← 轻量索引（id / name / description / stage / tags）
-  experiences/
-    deploy-001.md        ← 每条经验一个 Markdown 文件，人类可直接编辑
-    deploy-002.md
-    design-001.md
+{experiences_dir}/
+  xp-index.json          ← 轻量索引
+  deploy-001.md          ← 每条经验一个 Markdown 文件
+  design-001.md
 ```
 
-**索引与内容分离**：Codex 先读 `xp-index.json` 快速判断哪些经验相关，再按需读具体 `.md` 文件——避免经验库增大后每次都加载全部内容。
+**索引与内容分离**：Agent 先读 `xp-index.json`，再按需读 `{id}.md`。
 
 #### 两步工作流（推荐）
 
-经验的录入分两步，内容由 Codex 生成、归档由 CLI 完成：
+**Step 1** — Agent 对话中生成草稿 → `ankle_kd_tuning_experience.md`
 
-**Step 1 — 在 Codex 中生成草稿**
-
-在 Codex 对话中输入（关键词触发 `xp-generate` 协议）：
-
-```
-oma xp --generate "帮我把本次 ankle kd 调参的结论整理成经验，要包含前后参数对比"
-```
-
-Codex 读取当前会话上下文（`.oma/` 状态文件、本次对话内容），生成结构化草稿文件到当前目录，例如 `ankle_kd_tuning_experience.md`，并告知下一步命令。
-
-**Step 2 — 用户确认后 CLI 归档**
-
-检查草稿内容，满意后运行：
+**Step 2** — 归档：
 
 ```bash
 oma xp add --file ankle_kd_tuning_experience.md \
@@ -203,49 +260,22 @@ oma xp add --file ankle_kd_tuning_experience.md \
            --stage deploy
 ```
 
-CLI 自动从文件解析背景/核心经验/结果等字段，分配 ID，归档到 `~/.oma/experiences/`，更新全局索引。原草稿文件保留在原位置。
-
-#### Codex 查阅流程
-
-```bash
-# Step 1：扫索引（只读 xp-index.json，轻量）
-oma xp index --stage deploy --format md
-
-# Step 2：读相关经验的完整内容
-oma xp show deploy-001
-
-# 有明确关键词时：两阶段搜索（索引命中 + 全文）
-oma xp search "ankle chatter" --stage deploy
-```
-
 #### 完整命令参考
 
 ```bash
-# 归档经验
-oma xp add --file ankle_kd_experience.md --name "ankle-kd-tuning" \
-           --description "降低 ankle kd 消除颤振" --stage deploy   # 文件模式（推荐）
-oma xp add --stage deploy --name "..." --description "..."          # 纯 flag 模式
-oma xp add --stage tune                                             # 纯交互模式
-
-# 标签管理
-oma xp tag deploy-001 biped locomotion    # 为已有经验追加标签
-
-# 查阅
-oma xp index --format md                  # 扫轻量索引（Codex 入口）
-oma xp index --stage deploy --tag ankle --format md
-oma xp show deploy-001                    # 读单条完整内容
-oma xp search "reward hacking"            # 两阶段全文搜索
-oma xp search "biped latency" --stage deploy
-
-# 维护
+oma xp init --dir lab/experiences       # 配置路径（必须，首次）
+oma xp add [--dir <path>] ...           # 归档；--dir 可单次覆盖
+oma xp index --format md
+oma xp show deploy-001
+oma xp search "reward hacking" --stage tune
 oma xp delete tune-003
-oma xp reindex                            # 从 experiences/*.md 重建索引
+oma xp reindex
 ```
 
 **经验条目字段**（索引中）：`id` / `name` / `stage` / `robot_type` / `task` / `description` / `tags`  
 **经验文件完整字段**：以上全部 + `背景` / `核心经验` / `结果` / `来源项目`
 
-**质量原则**：只存已验证的成功路径；`description` 一句话让 Codex 判断相关性，要具体（"将 ankle kd 从 2.0 降至 0.8"，不是"优化了参数"）；`outcome` 优先量化；`tags` 必含机器人类型和任务类型。
+**质量原则**：只存已验证的成功路径；`description` 一句话让 Agent 判断相关性，要具体（"将 ankle kd 从 2.0 降至 0.8"，不是"优化了参数"）；`outcome` 优先量化；`tags` 必含机器人类型和任务类型。
 
 ---
 
@@ -291,7 +321,7 @@ oma log --stage train       # 过滤特定阶段
 
 ### `oma extract`
 
-从 Codex 对话中提取结构化输出并写入 `.oma/` 状态文件。
+从 Agent 对话中提取结构化输出并写入 `.oma/` 状态文件。
 
 ```bash
 oma extract
@@ -299,16 +329,50 @@ oma extract
 
 ---
 
-### `oma index --src <path>`
+### `oma index` — 按 track 登记本地代码路径
 
-注册开源参考代码库，供 implement 阶段的 Path A（改造现有代码）使用。
+将**本地代码目录**绑定到某个 design track。并行路线可维护两套代码，共用 `.oma/codebase/`，按 track 区分 `srcPath`。
 
 ```bash
-oma index --src ~/code/legged_gym
-oma index --src https://github.com/leggedrobotics/rsl_rl   # Git 地址自动 clone
+oma index --list
+oma index --src ./legged_gym_gait --track gait-clock
+oma index --src ./legged_gym_minimal --track minimal-reward
+oma index --src ./legged_gym --track gait-clock --force   # 覆盖该 track 映射
 ```
 
-注册后生成 `.oma/config.json`，implement skill 自动检测并提示选择 Path A。
+- `--track` 省略时，使用 `index.json` 的 `default_track`
+- `$design` / `$implement` 读取**当前 track** 的 `tracks[track_id].srcPath`
+- 旧版单路径项目：顶层 `srcPath` 仍可作为 fallback
+
+生成 `.oma/codebase/config.json`：
+
+```json
+{
+  "schema_version": "2.0",
+  "tracks": {
+    "gait-clock": {
+      "srcPath": "/abs/path/legged_gym_gait",
+      "primaryLang": "Python",
+      "registeredAt": "2026-07-01T..."
+    },
+    "minimal-reward": {
+      "srcPath": "/abs/path/legged_gym_minimal",
+      "primaryLang": "Python",
+      "registeredAt": "2026-07-01T..."
+    }
+  }
+}
+```
+
+典型流程：
+
+```bash
+oma track open gait-clock --label "步态时钟"
+oma index --src ./legged_gym_gait --track gait-clock
+oma track open minimal-reward --label "极简奖励"
+oma index --src ./legged_gym_minimal --track minimal-reward
+oma track list    # 查看各 track 的 codebase 列
+```
 
 ---
 
@@ -325,21 +389,63 @@ oma search "observation space"
 
 ## 开发生命周期详解
 
+### 门控与迭代环总览
+
+| 过渡 | 门控 | 类型 |
+|------|------|------|
+| → 进入环（`$design`/`$implement`/`$train`/`$tune`） | `requirements.md` LOCKED | **硬** |
+| 环内任意跳转 | 无 | 软（建议性） |
+| 环 → `$deploy` | `best.json` `deployGateOpen === true` | **硬** |
+
+**一圈（lap）≈ 一个 `exp_id`**。首圈通常产出完整 `design-{id}.md`；后续圈多为 **delta**——只记 `experiment.json` 的 `hypothesis` + `change`（`archive_level: light`）。重大变更（奖励重设计、架构替换）才升格为完整设计文档（`archive_level: full`）。
+
+**每圈收尾**：`$train` → `experiment-analysis` → 人工确认 → `experiment-recording` → 下一圈。Agent 应在每圈结束时主动提议归档，避免未记录的 lap 丢失经验。
+
+#### `.oma/index.json` — 项目仪表盘
+
+顶层路由：`meta` 含项目配置（指标、机器人、Gradmotion 等）；`active_tracks` / `closed_tracks` 登记设计范式级路线；环状态在 `tracks/{id}/loop.json`。通过 `oma track` 维护，不要手改。
+
+#### `.oma/tracks/{track_id}/loop.json` — 环状态指针（per track）
+
+跨会话恢复时，Agent 读 `index.default_track`，再读该 track 的 loop 定位「在第几圈、哪个阶段、当前实验 ID」：
+
+```json
+{
+  "track_id": "gait-clock",
+  "lap": 3,
+  "stage": "tune",
+  "exp_id": "exp-20260630-002",
+  "hypothesis": "提高 ankle-torque DR 上界以抑制 yaw 漂移",
+  "opened_at": "2026-06-30T09:00:00Z",
+  "updated_at": "2026-06-30T11:20:00Z"
+}
 ```
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  requirement │───▶│    design    │───▶│  implement   │
-│              │    │              │    │              │
-│ 机器人平台参数│    │ 网络/奖励/DR │    │ Path A/B选择 │
-│ 任务/环境定义│    │ 完整RL规格   │    │ 开源参考询问 │
-└──────────────┘    └──────────────┘    └──────────────┘
-                                                │
-                                                ▼
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│    deploy    │◀───│     tune     │◀───│    train     │
-│              │    │              │    │              │
-│ Sim2Real测试 │    │ 超参调优     │    │ gm任务创建   │
-│ 8类验证模板  │    │ 消融实验     │    │ 失效模式分类 │
-└──────────────┘    └──────────────┘    └──────────────┘
+
+- **Track** = 设计范式级路线（重定向数据 / 步态时钟 / 最小 reward 等），用 `oma track open` 创建
+- **Lap** = 同一 track 内的迭代圈
+
+- **新圈**：`$train`/`$tune` 收尾后带着新改动进入 `$design`/`$implement` 时，`lap`+1 并分配新 `exp_id`
+- **同圈内跳转**：仅更新 `stage` / `updated_at`
+- **`oma status`** / **`oma doctor`** 会显示当前 lap 与环内阶段
+
+---
+
+### 各阶段说明
+
+```
+┌──────────────┐
+│  requirement │  机器人平台参数、任务/环境定义 → requirements.md + knowledge.md (LOCKED)
+└──────┬───────┘
+       │ 硬门控（进环）
+       ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  迭代环:  design ↔ implement ↔ train ↔ tune  （可任意方向回跳）    │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │ 硬门控（出环: deployGateOpen）
+                               ▼
+┌──────────────┐
+│    deploy    │  Sim2Real 8 类验证 → 真机 → design-feedback 再进环
+└──────────────┘
 ```
 
 ### Requirement — 需求阶段
@@ -350,7 +456,7 @@ Skill 引导完成：
 - Domain Randomization 风险点识别
 - 约束条件与成功指标
 
-**门控输出**：`.oma/requirement.md`
+**门控输出**：`.oma/requirement/requirements.md`、`.oma/requirement/knowledge.md`（LOCKED）
 
 ---
 
@@ -368,7 +474,7 @@ Skill 生成完整的 RL 算法规格：
 - **RL 算法**：PPO/SAC 具体超参（clip_range、tau 等）
 - **消融实验计划**：最少 5 个变量
 
-**门控输出**：`.oma/design.md`
+**门控输出**：首圈 `.oma/tracks/{track_id}/design/design-{id}.md`；后续 delta 圈写入该 lap 的 `experiment.json`
 
 ---
 
@@ -377,17 +483,17 @@ Skill 生成完整的 RL 算法规格：
 **Phase 0（必须执行）**：Skill 首先询问：
 
 > "实现阶段开始。请问你是否有可以参考或复用的开源代码库？"
-> - **有** → Path A：在其基础上改造（使用 `oma index --src <path>` 注册）
+> - **有** → Path A：在其基础上改造（`oma index --src <path> --track <track-id>`）
 > - **没有** → Path B：按设计文档从零实现
 
 | 用户回答 | 路径 | 操作 |
 |---------|------|------|
-| 提供本地路径 | Path A | 若 config.json 不存在，提示执行 `oma index` |
+| 提供本地路径 | Path A | 若该 track 未登记，提示 `oma index --src <path> --track <track-id>` |
 | 提供 Git 地址 | Path A | 先 clone 再 index |
 | config.json 已存在 | Path A | 告知使用已注册路径 |
 | 明确说"没有" | Path B | 即使 config.json 存在也走 Path B |
 
-**门控输出**：`.oma/implement.md`、代码文件
+**门控输出**：`.oma/impl/impl-checklist.md`、`.oma/impl/github.json`、代码仓库
 
 ---
 
@@ -422,7 +528,7 @@ Skill 内置 Gradmotion (gm) 平台操作规范：
 | `exploration_collapse` | entropy 迅速降到零 | 熵系数 → 初始 std → reset 随机化 → 课程设置 |
 | `no_learning` | reward 始终接近零 | 验证奖励非零 → obs 含速度指令 → episode 长度 → 动作裁剪 |
 
-**门控输出**：`.oma/train.md`、checkpoint 路径、训练曲线
+**门控输出**：`.oma/tracks/{track-id}/experiments/{exp-id}/results.json`（`phase: train`）、checkpoint 路径
 
 ---
 
@@ -433,7 +539,7 @@ Skill 内置 Gradmotion (gm) 平台操作规范：
 - 每次实验记录超参变化 + 结果
 - 识别关键敏感超参
 
-**门控输出**：`.oma/tune.md`
+**门控输出**：`tracks/{track-id}/experiments-index.json`、`.oma/best.json`（含 `deployGateOpen`）
 
 ---
 
@@ -460,81 +566,57 @@ Skill 内置 Gradmotion (gm) 平台操作规范：
 
 ```
 your-robot-project/
-├── AGENTS.md                  # Codex 主提示词（OMA 核心，oma setup 生成）
+├── AGENTS.md                  # Agent 主提示词（OMA 核心，oma setup 生成；Cursor 等平台有对应落点）
 │
 ├── .oma/                      # OMA 状态目录（由 oma setup 创建，gitignore 覆盖工具文件）
-│   ├── config.json            # 项目配置（robot platform, Gradmotion IDs）
-│   ├── requirements.md        # 需求文档（$requirement skill 输出，LOCKED）
-│   ├── knowledge.md           # 论文知识提取（$requirement skill 输出，LOCKED）
-│   ├── memory.md              # 实验记忆（Dead Ends / Working Patterns / Open Hypotheses）
-│   ├── designs/               # 设计文档（$design skill 输出）
-│   │   └── design-{id}.md
-│   ├── impl/                  # 实现记录
-│   │   ├── impl-checklist.md  # 逐项实现进度追踪
-│   │   └── github.json        # 代码仓库信息
-│   ├── experiments/           # 每次训练/调优实验目录
-│   │   └── exp-{id}/
-│   │       ├── config.json
-│   │       └── results.json
-│   ├── leaderboard.json       # 调优排行榜（$tune 维护）
-│   ├── best.json              # 最优实验（deploy gate 依赖）
-│   ├── trajectory.jsonl       # 阶段事件流水账
-│   ├── standalone.json        # Standalone 模式状态（oma go 写入）
+│   ├── index.json             # 项目仪表盘（meta 配置 + active/closed tracks）
+│   ├── requirement/           # 进环硬门控区（$requirement）
+│   │   ├── requirements.md    # LOCKED 后进环
+│   │   ├── knowledge.md
+│   │   └── paper/             # oma extract / oma search
+│   ├── codebase/              # 按 track 映射本地代码路径（oma index）
+│   │   └── config.json        # tracks.{track_id}.srcPath
+│   ├── tracks/                # 一个 track = 一个设计范式单元
+│   │   └── {track-id}/
+│   │       ├── loop.json
+│   │       ├── memory.md
+│   │       ├── experiments-index.json   # lap 汇总 + 调参排名
+│   │       ├── design/
+│   │       │   └── design-{id}.md
+│   │       └── experiments/
+│   │           └── exp-{id}/
+│   │               ├── experiment.json
+│   │               └── results.json     # running → completed/failed（含 gm_task_id）
+│   ├── impl/                  # 项目级代码仓库信息（多 track 常共用）
+│   ├── best.json              # 出环门控：测试集终评 + deployGateOpen
+│   ├── standalone.json        # Standalone 模式状态（oma go / oma go loop 写入）
+│   # index.json.experiences_dir → 经验库路径（oma xp init --dir 配置，可在项目外）
 │   │
-│   ├── skills/                # Codex skill 提示词（gitignored，oma setup 安装）
-│   │   ├── deploy/SKILL.md
-│   │   ├── design/SKILL.md
-│   │   └── ...
-│   └── templates/             # 部署测试脚本与配置模板（gitignored，oma setup 安装）
-│       ├── deploy_info_template.json
-│       ├── sim2real_checklist_template.md
-│       └── deploy-tests/
+│   └── templates/             # 流程模板（oma setup 安装到 .oma/templates/）
 │
-└── [你的机器人代码文件]        # 原工程文件，不受 OMA 污染
+├── .cursor/skills/            # Cursor：oma setup -p cursor 注入（核心 + 可选 reference）
+├── .codex/skills/             # Codex：oma setup 注入（默认平台）
+│
+└── [你的机器人代码]            # 项目根或子目录；路径由 codebase/config.json 按 track 指向
 
-~/.oma/                        # 全局经验库（跨项目共享）
-  ├── xp-index.json            # 轻量索引（id / name / description / stage / tags）
-  └── experiences/
-      ├── deploy-001.md        # 每条经验一个 Markdown 文件
-      └── ...
+# 两条路线、两套本地代码示例：
+#   ./legged_gym_gait/      → track gait-clock
+#   ./legged_gym_minimal/   → track minimal-reward
+
+{experiences_dir}/             # 用户配置的经验库（index.json experiences_dir，可项目内/外）
+  xp-index.json
+  deploy-001.md
+  design-001.md
 ```
 
 ---
 
-## Standalone 模式
+## 关于 Agent 提示词（AGENTS.md 等）
 
-门控系统确保流程质量，但有时你需要直接进入某个阶段（例如快速调试训练、基于已有设计继续）。Standalone 模式提供无门控的单阶段入口：
+`AGENTS.md` 是 OMA 在 Codex / meta-agent 等平台上的核心路由文件；Cursor 对应 `.cursor/rules/oma-core.mdc`，Claude Code 对应 `CLAUDE.md`。各平台 Agent 在会话启动时读取对应文件，内容包括：
 
-```bash
-# 进入 train 阶段（不检查前置文件）
-oma go train --reason "已有 checkpoint，继续 finetune"
-
-# 此时 .oma/standalone.json 被创建
-# Codex 读取 AGENTS.md 时检测到该文件，切换为 advisory 门控
-# 所有门控条件变为"建议"而非"阻止"
-
-# 退出 standalone
-oma go off
-```
-
-`.oma/standalone.json` 内容：
-```json
-{
-  "stage": "train",
-  "skill": "train",
-  "enteredAt": "2025-01-15T10:30:00.000Z",
-  "reason": "已有 checkpoint，继续 finetune"
-}
-```
-
----
-
-## 关于 AGENTS.md
-
-`AGENTS.md` 是 OMA 的核心。Codex CLI 每次启动时读取它，内容包括：
-
-- **启动协议**：检查 standalone 状态、读取当前阶段、加载上下文
-- **阶段门控规则**：每个阶段的前置文件要求
+- **启动协议**：检查 standalone / `index.json` + 默认 track 的 `loop.json`、加载 `memory.md` 与上下文
+- **门控链**：两个硬门控 + 环内四阶段自由迭代；`oma go loop` 免需求进环说明
 - **机器人 RL 操作原则**：
   - Sim2Real gap 是部署的首要风险
   - 奖励黑洞是行为崩塌的根因
@@ -573,17 +655,17 @@ gm task delete --task <task-id>
 **为什么不用 Python？**
 OMA CLI 使用纯 Node.js 内置模块（fs、path、readline），零 npm 依赖，`npm install -g .` 即可全局使用，无需虚拟环境、无版本冲突。
 
-**为什么基于 Codex 而不是自建 Agent？**
-Codex CLI 已经解决了工具调用、代码执行、文件编辑的基础设施问题。OMA 只需要提供高质量的领域知识（AGENTS.md + skill prompts），让 Codex 在正确的上下文中做出正确决策。
+**为什么是 Agent 编排层，而不是自建 Agent？**
+现代 Agent（Codex、Cursor、Claude Code 等）已经解决了工具调用、代码执行、文件编辑的基础设施问题。OMA 不重复造轮子，只提供高质量的领域知识（路由提示词 + 阶段 skill），让任意 Agent 在正确的上下文中做出正确决策。工作流在 Codex 上首发验证，但协议与 CLI 与具体 Agent 实现解耦。
 
 **为什么每个阶段要写文件？**
-`.oma/*.md` 文件是跨 Codex 会话的状态记忆。Codex 无法记住上次对话，但可以读取文件。OMA 把"记忆"外化为结构化文档，让每次 Codex 会话都有完整上下文。
+`.oma/*.md` 文件是跨 Agent 会话的状态记忆。Agent 无法可靠记住上次对话，但可以读取文件。OMA 把"记忆"外化为结构化文档，让每次新会话都有完整上下文。
 
-**为什么经验库是全局的？**
-`~/.oma/` 跨项目积累，不绑定单个仓库。在二足机器人项目 A 里发现的奖励函数技巧，在四足项目 B 里同样可以参考。越用越有价值。
+**为什么经验库路径由用户指定？**
+不同团队/项目可把经验放在共享目录、monorepo 子路径或独立 lab 仓库。路径写入 `index.json` 的 `experiences_dir`，Agent 与 CLI 统一 follow；需要时可 `--dir` 单次覆盖。
 
 **为什么经验库索引与内容分离？**
-`xp-index.json` 只存 name + description + tags，让 Codex 能用极低成本扫描"有哪些经验"，再决定是否读具体 `.md` 文件的完整内容。随着经验库增长，这个设计让查阅成本保持稳定，不随条目数量线性增长。
+`xp-index.json` 只存 name + description + tags，让 Agent 能用极低成本扫描"有哪些经验"，再决定是否读具体 `.md` 文件的完整内容。随着经验库增长，这个设计让查阅成本保持稳定，不随条目数量线性增长。
 
 ---
 
